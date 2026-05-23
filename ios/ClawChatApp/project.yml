@@ -1,0 +1,58 @@
+name: ClawChatApp
+options:
+  bundleIdPrefix: io.vulturelabs
+  deploymentTarget:
+    iOS: "16.0"
+  developmentLanguage: en
+  groupSortPosition: top
+  generateEmptyDirectories: true
+  createIntermediateGroups: true
+  defaultConfig: Debug
+
+packages:
+  ClawChat:
+    path: ../ClawChat
+
+settings:
+  base:
+    DEVELOPMENT_TEAM: ""
+    SWIFT_VERSION: "5.9"
+    ENABLE_USER_SCRIPT_SANDBOXING: NO
+    CODE_SIGN_STYLE: Automatic
+    TARGETED_DEVICE_FAMILY: "1,2"
+    GENERATE_INFOPLIST_FILE: NO
+    INFOPLIST_KEY_UIApplicationSceneManifest_Generation: NO
+    # Pilot.xcframework ships only arm64 + ios-arm64-simulator slices — exclude
+    # the x86_64 simulator arch so Xcode UI builds on Apple Silicon don't fail
+    # trying to link against a missing slice.
+    "EXCLUDED_ARCHS[sdk=iphonesimulator*]": x86_64
+
+targets:
+  ClawChatApp:
+    type: application
+    platform: iOS
+    deploymentTarget: "16.0"
+    sources:
+      - path: ClawChatApp.swift
+      - path: Assets.xcassets
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: io.vulturelabs.clawchat
+        INFOPLIST_FILE: Info.plist
+        CURRENT_PROJECT_VERSION: 1
+        MARKETING_VERSION: "0.1.0"
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
+    dependencies:
+      - package: ClawChat
+        product: ClawChat
+
+schemes:
+  ClawChatApp:
+    build:
+      targets:
+        ClawChatApp: all
+    run:
+      config: Debug
+    archive:
+      config: Release
