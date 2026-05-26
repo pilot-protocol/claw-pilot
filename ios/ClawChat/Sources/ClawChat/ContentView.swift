@@ -9,6 +9,9 @@ public struct ClawChatView: View {
     @StateObject private var convo: Conversation = Conversation()
     private let clawConfig: PilotConnection.Config
     private let notificationTitle: String?
+    /// Transient toast text that appears when the user taps an inline pilot
+    /// address (handled by handlePeerLink). Auto-clears after a short delay.
+    @State private var peerLinkToast: String?
 
     public init(clawConfig: PilotConnection.Config, notificationTitle: String? = nil) {
         self.clawConfig = clawConfig
@@ -28,6 +31,26 @@ public struct ClawChatView: View {
             }
             messageList
             composer
+        }
+        // Pilot addresses inside messages are rendered as clawchat://peer/<addr>
+        // links. Catch them before the system tries to open an unknown scheme.
+        .environment(\.openURL, OpenURLAction { url in
+            if let addr = ChatLinkScheme.peerAddress(from: url) {
+                handlePeerLink(addr)
+                return .handled
+            }
+            return .systemAction
+        })
+        .overlay(alignment: .bottom) {
+            if let t = peerLinkToast {
+                Text(t)
+                    .font(.caption)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 8)
+                    .background(.regularMaterial, in: Capsule())
+                    .padding(.bottom, 80)
+                    .transition(.opacity.combined(with: .move(edge: .bottom)))
+            }
         }
         .onAppear {
             if convo.state == .idle {
@@ -276,6 +299,25 @@ public struct ClawChatView: View {
         #endif
     }
 
+    /// Handle a tap on an inline pilot-address pill: copy the address to the
+    /// system clipboard and surface a brief confirmation toast. Convenient
+    /// for "the agent mentioned a peer; copy it into the address book."
+    private func handlePeerLink(_ address: String) {
+        #if canImport(UIKit)
+        UIPasteboard.general.string = address
+        #endif
+        withAnimation(.easeInOut(duration: 0.2)) {
+            peerLinkToast = "copied \(address)"
+        }
+        // Auto-clear after a short window so the toast doesn't linger.
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 1_800_000_000)
+            withAnimation(.easeInOut(duration: 0.2)) {
+                peerLinkToast = nil
+            }
+        }
+    }
+
     @State private var showFilePicker = false
     @State private var showPhotoPicker = false
 
@@ -287,7 +329,7 @@ public struct ClawChatView: View {
                     attachmentView(att, alignment: m.sender == .me ? .trailing : .leading)
                 }
                 if !m.text.isEmpty {
-                    Text(m.text)
+                    Text(renderChatText(m.text))
                         .textSelection(.enabled)
                         .padding(.horizontal, 12)
                         .padding(.vertical, 8)
