@@ -132,6 +132,12 @@ public final class PilotConnection {
     private let cfg: Config
     private var pilot: Pilot?
     private var recvTask: Task<Void, Never>?
+    /// Bumped on every restart so each fresh daemon gets a unique IPC socket
+    /// basename. Pilot.stop() tears down the global Go runtime asynchronously
+    /// — if the old unix socket file is still held when start() retries with
+    /// the original basename, the new daemon either races on bind() or
+    /// silently inherits a wedged socket. A fresh basename dodges both.
+    private var restartGeneration: Int = 0
     private let reassembler = Wire.Reassembler(kind: .agent)
     private let mediaReassembler = Wire.MediaReassembler()
     private var seenIds: Set<String> = []
@@ -176,9 +182,16 @@ public final class PilotConnection {
     /// exponential backoff capped at 30s). The Pilot daemon is started once;
     /// only the handshake/waitForTrust pair is retried.
     public func start(maxAttempts: Int = 4) async throws {
+        // Cycle the socket basename each restart so we never collide with
+        // a stale unix-socket file held by the previous (slow-to-die) Go
+        // runtime. The Pilot identity lives in dataDir, not socketPath, so
+        // the daemon's overlay address stays stable across restarts.
+        let socketName = restartGeneration == 0
+            ? cfg.socketBasename
+            : "\(cfg.socketBasename).\(restartGeneration)"
         let p = try Pilot.start(.init(
             dataDir: cfg.dataDir,
-            socketPath: cfg.socketBasename,
+            socketPath: socketName,
             trustAutoApprove: cfg.trustAutoApprove,
             keepaliveSeconds: 30
         ))
@@ -437,15 +450,41 @@ public final class PilotConnection {
     /// a full daemon rebuild — that's what app-restart used to be the workaround
     /// for. Call this on app return-to-foreground, or after a stretch of
     /// unacknowledged sends, to recover without forcing the user to restart.
-    public func reconnect(maxAttempts: Int = 4) async throws {
+    ///
+    /// `gracePeriodMs` is the pause between teardown and re-start. Pilot.stop()
+    /// returns synchronously, but the underlying Go runtime tears down its
+    /// goroutines and releases the unix socket asynchronously — slamming
+    /// start() immediately after stop() can race the socket release. 500ms
+    /// is enough for the common case; the forceReconnect() path uses more.
+    public func reconnect(maxAttempts: Int = 4, gracePeriodMs: UInt64 = 500) async throws {
         tearDownDaemon()
+        if gracePeriodMs > 0 {
+            try? await Task.sleep(nanoseconds: gracePeriodMs * 1_000_000)
+        }
+        restartGeneration += 1
         try await start(maxAttempts: maxAttempts)
+    }
+
+    /// Most aggressive recovery path — for when `reconnect()` already failed
+    /// and the user is staring at a frozen chat. Longer grace, more
+    /// retry attempts, and unconditionally cycles the socket basename.
+    /// Surface this through a UI button labelled "Force restart daemon" so
+    /// the user has explicit agency when auto-recovery loses.
+    public func forceReconnect() async throws {
+        try await reconnect(maxAttempts: 6, gracePeriodMs: 1_500)
     }
 
     private func tearDownDaemon() {
         recvTask?.cancel()
         recvTask = nil
-        try? pilot?.stop()
+        do {
+            try pilot?.stop()
+        } catch {
+            // Visibility for the wedge case — historically swallowed with
+            // `try?`, which hid the very signal we needed to diagnose
+            // reconnect failures.
+            pcLog.warning("pilot.stop() threw during teardown: \(String(describing: error), privacy: .public)")
+        }
         pilot = nil
         isReady = false
         selfAddress = nil

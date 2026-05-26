@@ -399,6 +399,29 @@ public final class Conversation: ObservableObject {
         }
     }
 
+    /// Aggressive reset path — what a user reaches for when `refresh()`
+    /// already failed and they're staring at a frozen chat. Calls
+    /// `PilotConnection.forceReconnect()` which cycles the socket basename
+    /// and uses a longer grace period before re-init, so a stuck Go
+    /// runtime can fully release sockets before the new daemon binds.
+    public func forceReset() {
+        guard let conn = connection else { return }
+        state = .connecting
+        statusMessage = "force restart — tearing down daemon"
+        let started = Date()
+        Task { [weak self] in
+            do {
+                try await conn.forceReconnect()
+                self?.state = .ready(selfAddress: conn.selfAddress ?? "?")
+                self?.statusMessage = "force restart succeeded — \(elapsedString(started))"
+                self?.drainOutbox()
+            } catch {
+                self?.state = .error(String(describing: error))
+                self?.statusMessage = "force restart FAILED — \(String(describing: error)) — close the app and reopen"
+            }
+        }
+    }
+
     /// Start the wedge-recovery watchdog. Polls every
     /// `watchdogIntervalSeconds`; if any outbound message has been stuck in
     /// `.sending` / `.sent` for longer than `watchdogStuckThresholdSeconds`,

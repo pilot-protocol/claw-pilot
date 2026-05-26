@@ -152,4 +152,13 @@ final class ConversationTests: XCTestCase {
         XCTAssertEqual(c.watchdogIntervalSeconds, 10)
         XCTAssertEqual(c.watchdogStuckThresholdSeconds, 45)
     }
+
+    // forceReset must be safe to call before connect() — the menu button
+    // shouldn't crash if the user taps it while disconnected.
+    func testForceResetBeforeConnectIsNoop() {
+        let c = Conversation()
+        c.forceReset()
+        // No connection to reset; state stays idle and the call is a no-op.
+        XCTAssertEqual(c.state, .idle)
+    }
 }

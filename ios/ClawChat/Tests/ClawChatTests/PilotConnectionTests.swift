@@ -138,4 +138,32 @@ final class PilotConnectionTests: XCTestCase {
             XCTAssertFalse(conn.isReady)
         }
     }
+
+    // forceReconnect is the user-facing "Force restart" path; it should
+    // behave like reconnect but with the longer grace + cycled socket
+    // basename. Contract from the failure path is identical: throws on
+    // handshake failure, leaves isReady false.
+    func testForceReconnectIsCallableAndFailsCleanly() async {
+        let conn = PilotConnection(config: makeConfig())
+        do {
+            try await conn.forceReconnect()
+            XCTFail("expected handshake to fail against fake peer 42")
+        } catch {
+            XCTAssertFalse(conn.isReady)
+        }
+    }
+
+    // gracePeriodMs of 0 is supported (tests want to skip the sleep). The
+    // restart still cycles the socket basename — verified indirectly via
+    // the lack of crash; the actual basename change is observable only
+    // via the SDK's internal config which we don't surface.
+    func testReconnectWithZeroGracePeriodWorks() async {
+        let conn = PilotConnection(config: makeConfig())
+        do {
+            try await conn.reconnect(maxAttempts: 1, gracePeriodMs: 0)
+            XCTFail("expected fake peer to fail")
+        } catch {
+            XCTAssertFalse(conn.isReady)
+        }
+    }
 }

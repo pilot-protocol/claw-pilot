@@ -127,6 +127,16 @@ public struct ClawChatView: View {
                     Label("Test connection", systemImage: "bolt.heart")
                 }
                 .disabled(!isReady)
+                Divider()
+                // Manual escape hatch when auto-recovery loses. Bumps the
+                // socket basename, waits longer for the Go runtime to
+                // release sockets, then re-starts. Labelled distinctly so
+                // it doesn't get confused with the cheap Reconnect path.
+                Button(role: .destructive) {
+                    convo.forceReset()
+                } label: {
+                    Label("Force restart daemon", systemImage: "exclamationmark.arrow.circlepath")
+                }
             } label: {
                 Image(systemName: "ellipsis.circle")
                     .imageScale(.large)
@@ -204,10 +214,32 @@ public struct ClawChatView: View {
                 .foregroundStyle(.primary)
                 .lineLimit(2)
             Spacer(minLength: 0)
+            // Surface a one-tap escape hatch when the banner is signalling
+            // an actual failure (not just "refreshing…"). Equivalent to the
+            // Force restart menu item but doesn't require diving through
+            // the Connection actions menu.
+            if shouldOfferForceRestart(message) {
+                Button("Force restart") {
+                    convo.forceReset()
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.small)
+            }
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 8)
         .background(palette.tint.opacity(0.08))
+    }
+
+    /// Banner messages that warrant a prominent reset button. Watchdog-tripped
+    /// and outright failures qualify; informational "refreshing…" /
+    /// "reconnecting…" messages don't (action would race with what's already
+    /// in flight).
+    private func shouldOfferForceRestart(_ msg: String) -> Bool {
+        if msg.localizedCaseInsensitiveContains("FAILED") { return true }
+        if msg.localizedCaseInsensitiveContains("watchdog") { return true }
+        if msg.localizedCaseInsensitiveContains("wedge") { return true }
+        return false
     }
 
     private func statusBannerPalette(_ msg: String) -> (icon: String, tint: Color) {
