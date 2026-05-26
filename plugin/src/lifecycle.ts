@@ -163,16 +163,6 @@ export class PilotLifecycle {
       nodeId: info.nodeId,
     });
 
-    const runtime = getPilotRuntime();
-    const dispatch = runtime
-      ? runtime.buildDispatch(account)
-      : async (m: { text: string; senderAddress: string; messageId: string }) => {
-          this.deps.logger.warn(
-            "pilot: runtime not set — dropping inbound message (will be wired by openclaw at startup)",
-            { id: m.messageId, sender: m.senderAddress, textLen: m.text.length },
-          );
-        };
-
     // Per-account outbox. Persists to disk so messages queued during a pod
     // crash survive the restart. Path is namespaced per account so multiple
     // accounts can't clobber each other.
@@ -181,6 +171,18 @@ export class PilotLifecycle {
     const outbox = new Outbox({
       path: join(outboxDir, `outbox-${account.accountId}.json`),
     });
+
+    // Built after the outbox so the dispatch's ReplyDispatcher can fall
+    // back to enqueueing when transport.send fails.
+    const runtime = getPilotRuntime();
+    const dispatch = runtime
+      ? runtime.buildDispatch({ account, transport, outbox })
+      : async (m: { text: string; senderAddress: string; messageId: string }) => {
+          this.deps.logger.warn(
+            "pilot: runtime not set — dropping inbound message (will be wired by openclaw at startup)",
+            { id: m.messageId, sender: m.senderAddress, textLen: m.text.length },
+          );
+        };
 
     const pipeline = new InboundPipeline({
       account,

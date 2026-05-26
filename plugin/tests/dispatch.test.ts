@@ -281,3 +281,94 @@ describe("buildDispatcher fallback chain", () => {
     expect(logger.warn).toHaveBeenCalled();
   });
 });
+
+describe("buildDispatcher passes a ReplyDispatcher to dispatchReplyFromConfig", () => {
+  // Regression for the openclaw `Cannot read properties of undefined
+  // (reading 'sendFinalReply')` crash. Without a dispatcher param, openclaw's
+  // internal helper blows up the moment the agent run produces (or fails to
+  // produce) output. We must always pass one — wired to the transport when
+  // replyDeps is provided, a stub noop when not.
+  it("with replyDeps wired, dispatcher has sendFinalReply/sendBlockReply/sendToolResult callable", async () => {
+    const sent: Array<{ peer: string; port: number; data: Buffer }> = [];
+    let capturedDispatcher: {
+      sendFinalReply: (p: { text?: string }) => boolean;
+      sendBlockReply: (p: { text?: string }) => boolean;
+      sendToolResult: (p: { text?: string }) => boolean;
+      waitForIdle: () => Promise<void>;
+      markComplete: () => void;
+    } | undefined;
+    // Mimic openclaw: invoke sendFinalReply DURING the dispatchReplyFromConfig
+    // call, before our finally-block triggers markComplete().
+    const dispatchReplyFromConfig = vi.fn().mockImplementation(async (params: { dispatcher: typeof capturedDispatcher }) => {
+      capturedDispatcher = params.dispatcher;
+      capturedDispatcher!.sendFinalReply({ text: "hello" });
+      await capturedDispatcher!.waitForIdle();
+    });
+    const strategy = {
+      kind: "dispatchReplyFromConfig" as const,
+      runtime: {
+        channel: { reply: { dispatchReplyFromConfig } },
+        cfg: () => ({}),
+      } as never,
+    };
+    const transport = Object.assign(new (await import("node:events")).EventEmitter(), {
+      start: async () => ({ address: "0:0000.0001.0001", nodeId: 1 }),
+      send: async (peer: string, port: number, data: Buffer) => {
+        sent.push({ peer, port, data });
+      },
+      stop: async () => undefined,
+    }) as never;
+    const account = {
+      accountId: "default",
+      enabled: true,
+      socketPath: "/tmp/p.sock",
+      allowlist: new Set(["1:0000.0000.AAAA"]),
+      appPort: 7777,
+      handshakeTrustAutoApprove: true,
+      sharedSecret: undefined,
+    };
+    const dispatcher = buildDispatcher({
+      strategy,
+      logger: silentLogger(),
+      api: { runtime: {} } as never,
+      replyDeps: { account, transport },
+    });
+    await dispatcher(makeMsg());
+
+    expect(dispatchReplyFromConfig).toHaveBeenCalledTimes(1);
+    expect(capturedDispatcher).toBeDefined();
+    expect(typeof capturedDispatcher!.sendFinalReply).toBe("function");
+    expect(typeof capturedDispatcher!.sendBlockReply).toBe("function");
+    expect(typeof capturedDispatcher!.sendToolResult).toBe("function");
+    expect(typeof capturedDispatcher!.waitForIdle).toBe("function");
+    expect(typeof capturedDispatcher!.markComplete).toBe("function");
+
+    // sendFinalReply (called inside the mock) should have pushed bytes.
+    expect(sent.length).toBeGreaterThanOrEqual(1);
+    expect(sent[0]!.peer).toBe("1:0000.0000.AAAA");
+    expect(sent[0]!.port).toBe(7777);
+  });
+
+  it("without replyDeps, dispatcher is a noop stub that doesn't crash openclaw", async () => {
+    const dispatchReplyFromConfig = vi.fn().mockResolvedValue(undefined);
+    const strategy = {
+      kind: "dispatchReplyFromConfig" as const,
+      runtime: {
+        channel: { reply: { dispatchReplyFromConfig } },
+        cfg: () => ({}),
+      } as never,
+    };
+    const dispatcher = buildDispatcher({
+      strategy,
+      logger: silentLogger(),
+      api: { runtime: {} } as never,
+    });
+    await dispatcher(makeMsg());
+
+    const call = dispatchReplyFromConfig.mock.calls[0]![0]!;
+    expect(typeof call.dispatcher.sendFinalReply).toBe("function");
+    // The noop returns true so openclaw's "did we accept the reply" check
+    // doesn't infinite-loop, but no transport call happens.
+    expect(call.dispatcher.sendFinalReply({ text: "x" })).toBe(true);
+  });
+});

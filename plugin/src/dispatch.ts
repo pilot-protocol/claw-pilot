@@ -18,12 +18,16 @@
 // We log the chosen path once at boot so it's easy to debug from `openclaw
 // plugins doctor`.
 
+import type { ResolvedPilotAccount } from "./config.js";
 import type {
   InboundDispatchInput,
   InboundLogger,
   InboundMediaAttachment,
 } from "./inbound.js";
 import type { OpenClawConfig, OpenClawPluginApi, PluginRuntime } from "./openclaw-types.js";
+import type { Outbox } from "./outbox.js";
+import { buildPilotReplyDispatcher, type ReplyDispatcher } from "./reply-dispatcher.js";
+import type { Transport } from "./transport.js";
 import { CHANNEL_ID } from "./channel-plugin-api.js";
 
 /**
@@ -47,12 +51,16 @@ function attachmentSlots(attachments: InboundMediaAttachment[] | undefined): {
 }
 
 type RuntimeShape = PluginRuntime & {
-  // dispatchReplyFromConfig path
+  // dispatchReplyFromConfig path. The dispatcher param is REQUIRED by
+  // openclaw — calling without it crashes on `dispatcher.sendFinalReply`
+  // the moment the agent run produces (or fails to produce) output.
   channel?: {
     reply?: {
       dispatchReplyFromConfig?: (params: {
         ctx: Record<string, unknown>;
         cfg: OpenClawConfig;
+        dispatcher: ReplyDispatcher;
+        configOverride?: OpenClawConfig;
       }) => Promise<unknown>;
     };
   };
@@ -101,12 +109,25 @@ export function pickDispatchStrategy(api: OpenClawPluginApi, logger: InboundLogg
  * strategy in the chain if the primary throws, so a single bad call doesn't
  * lose the message silently.
  */
+/**
+ * Per-account wiring required for the dispatchReplyFromConfig path to send
+ * agent replies back to the peer. When absent (e.g. legacy tests), the path
+ * passes a no-op dispatcher — openclaw won't crash, but no reply will reach
+ * the peer either.
+ */
+export type ReplyTransportDeps = {
+  account: ResolvedPilotAccount;
+  transport: Transport;
+  outbox?: Outbox;
+};
+
 export function buildDispatcher(params: {
   strategy: DispatchStrategy;
   logger: InboundLogger;
   api: OpenClawPluginApi;
+  replyDeps?: ReplyTransportDeps;
 }): (msg: InboundDispatchInput) => Promise<void> {
-  const { strategy, logger, api } = params;
+  const { strategy, logger, api, replyDeps } = params;
 
   // Order primary first, then the rest as fallbacks. If the primary IS
   // log-only there's nothing to fall through to.
@@ -125,7 +146,7 @@ export function buildDispatcher(params: {
       const step = chain[i]!;
       const isLast = i === chain.length - 1;
       try {
-        await runStrategy(step, msg, sessionKey, slots, logger);
+        await runStrategy(step, msg, sessionKey, slots, logger, replyDeps);
         const beaconKey = `${msg.accountId}:${step.kind}`;
         if (!beaconSeen.has(beaconKey)) {
           beaconSeen.add(beaconKey);
@@ -188,6 +209,7 @@ async function runStrategy(
   sessionKey: string,
   slots: ReturnType<typeof attachmentSlots>,
   logger: InboundLogger,
+  replyDeps: ReplyTransportDeps | undefined,
 ): Promise<void> {
   switch (strategy.kind) {
     case "dispatchReplyFromConfig": {
@@ -195,32 +217,53 @@ async function runStrategy(
         typeof strategy.runtime.cfg === "function"
           ? strategy.runtime.cfg()
           : ({} as OpenClawConfig);
+      // Build a per-message ReplyDispatcher bound to this peer. openclaw
+      // calls dispatcher.sendFinalReply / sendBlockReply / sendToolResult as
+      // the agent run produces output. Without one openclaw would crash on
+      // `Cannot read properties of undefined (reading 'sendFinalReply')`.
+      const dispatcher: ReplyDispatcher = replyDeps
+        ? buildPilotReplyDispatcher({
+            account: replyDeps.account,
+            peerAddr: msg.senderAddress,
+            transport: replyDeps.transport,
+            outbox: replyDeps.outbox,
+            logger,
+          })
+        : noopReplyDispatcher(logger);
       // Field names match openclaw's MsgContext type — see
       // plugin-sdk/src/auto-reply/templating.d.ts. The schema uses PascalCase
       // (Body, From, MessageSid, Provider, etc).
-      await strategy.runtime.channel!.reply!.dispatchReplyFromConfig!({
-        ctx: {
+      try {
+        await strategy.runtime.channel!.reply!.dispatchReplyFromConfig!({
+          ctx: {
+            cfg,
+            Body: msg.text,
+            BodyForAgent: msg.text,
+            BodyForCommands: msg.text,
+            RawBody: msg.text,
+            Provider: CHANNEL_ID,
+            AccountId: msg.accountId,
+            From: msg.senderAddress,
+            To: msg.senderAddress,
+            SenderId: msg.senderAddress,
+            SenderName: msg.senderAddress,
+            MessageSid: msg.messageId,
+            MessageSidFull: msg.messageId,
+            RootMessageId: msg.messageId,
+            Timestamp: msg.timestamp,
+            ChatType: "direct",
+            SessionKey: sessionKey,
+            ...slots,
+          },
           cfg,
-          Body: msg.text,
-          BodyForAgent: msg.text,
-          BodyForCommands: msg.text,
-          RawBody: msg.text,
-          Provider: CHANNEL_ID,
-          AccountId: msg.accountId,
-          From: msg.senderAddress,
-          To: msg.senderAddress,
-          SenderId: msg.senderAddress,
-          SenderName: msg.senderAddress,
-          MessageSid: msg.messageId,
-          MessageSidFull: msg.messageId,
-          RootMessageId: msg.messageId,
-          Timestamp: msg.timestamp,
-          ChatType: "direct",
-          SessionKey: sessionKey,
-          ...slots,
-        },
-        cfg,
-      });
+          dispatcher,
+        });
+        // Wait for any in-flight chunked sends to finish before returning
+        // so beacon logs / failure reporting see the settled state.
+        await dispatcher.waitForIdle();
+      } finally {
+        dispatcher.markComplete();
+      }
       return;
     }
     case "enqueueNextTurnInjection": {
@@ -253,6 +296,29 @@ async function runStrategy(
  */
 export function buildSessionKey(params: { accountId: string; peer: string }): string {
   return `${CHANNEL_ID}:${params.accountId}:${params.peer}`;
+}
+
+/**
+ * Stand-in dispatcher used when no transport deps are wired (tests, legacy
+ * callers). Lets `dispatchReplyFromConfig` complete without crashing on
+ * undefined dispatcher fields — but any replies the agent emits are dropped.
+ */
+function noopReplyDispatcher(logger: InboundLogger): ReplyDispatcher {
+  const counts = { tool: 0, block: 0, final: 0 } as Record<"tool" | "block" | "final", number>;
+  const note = (kind: "tool" | "block" | "final") => {
+    counts[kind] += 1;
+    logger.warn("pilot dispatch: reply dropped — no transport wired into dispatcher", { kind });
+    return true;
+  };
+  return {
+    sendToolResult: () => note("tool"),
+    sendBlockReply: () => note("block"),
+    sendFinalReply: () => note("final"),
+    waitForIdle: async () => undefined,
+    getQueuedCounts: () => ({ ...counts }),
+    getFailedCounts: () => ({ tool: 0, block: 0, final: 0 }),
+    markComplete: () => undefined,
+  };
 }
 
 /**

@@ -65,7 +65,9 @@ Full spec in `shared/WIRE.md`.
 
 ## What works today
 
-- Text + media (files, images, audio) round-trip between iOS and the plugin
+- Full bidirectional text messaging — phone → claw → agent reply → phone, end-to-end through `dispatchReplyFromConfig` with a `ReplyDispatcher` that chunks the agent's reply back over Pilot
+- Inbound media (files, images, audio) round-trips into the agent
+- Outbound media via the `OutboundAdapter` path (the channel's registered sender)
 - Multi-chunk reassembly with id-based dedup
 - Per-peer persistent outbox in the plugin (retry on transport failure, drain on peer proof-of-life)
 - Per-profile chat history on iOS, persisted to UserDefaults + sidecar attachments
@@ -74,6 +76,9 @@ Full spec in `shared/WIRE.md`.
 
 ## What doesn't (yet)
 
+- Media replies via the **embedded reply lane** (`dispatchReplyFromConfig`) are
+  logged + ignored — only text is sent through the dispatcher. Normal channel
+  routing through `OutboundAdapter` still handles media.
 - True background wake on iOS — needs APNs sender service + push cert
 - Stable claw `node_id` across registry handoffs — requires a `-fixed-node-id` flag in the daemon
 - Polished install / config UX — currently very developer-y

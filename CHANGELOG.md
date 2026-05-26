@@ -4,6 +4,32 @@ All notable changes to claw-pilot. Format loosely follows [Keep a Changelog](htt
 
 ## [Unreleased]
 
+### Fixed
+- **Plugin: wire a real `ReplyDispatcher` into `dispatchReplyFromConfig`.** The
+  call was passing `{ ctx, cfg }` but openclaw's signature requires
+  `{ ctx, cfg, dispatcher }`; the undefined dispatcher was what produced
+  `TypeError: Cannot read properties of undefined (reading 'sendFinalReply')`
+  the moment the agent run produced (or failed to produce) any output. With
+  this fix the channel actually returns replies to the peer end-to-end. Limit:
+  the embedded reply lane only routes `text` replies for now — media replies
+  still rely on the channel's `OutboundAdapter` path (logged + ignored if they
+  arrive via the dispatcher).
+- Inbound errors from openclaw (e.g. agent auth failures) are now deliverable
+  back to the peer as `error` envelopes instead of crashing the dispatch helper
+  silently.
+
+### Added
+- `src/reply-dispatcher.ts` — `buildPilotReplyDispatcher`, a per-peer factory
+  that turns openclaw `ReplyPayload`s into chunked `agent` wire envelopes via
+  the same `chunkAgentText` + `encodeEnvelope` + outbox path the
+  `OutboundAdapter` uses. Counted as `tool`/`block`/`final` for openclaw's
+  `getQueuedCounts` / `getFailedCounts` contract.
+- `runtime-api.ts`: `PilotRuntime.buildDispatch` now takes an
+  `AccountRuntimeContext` (`{ account, transport, outbox? }`) so the dispatch
+  closure can reach the live transport for outbound replies.
+- 8 tests for `buildPilotReplyDispatcher` + 2 regression tests in
+  `dispatch.test.ts` covering the dispatcher-wiring contract.
+
 ### Changed
 - Moved repository into the `pilot-protocol` org folder.
 - Removed `deploy/` install scripts and `e2e/` harness — to be reintroduced once the project layout stabilises.

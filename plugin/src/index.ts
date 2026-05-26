@@ -57,7 +57,17 @@ export default definePluginEntry({
 
     setPilotRuntime({
       host: api.runtime,
-      buildDispatch: (_account) => buildDispatcher({ strategy, logger, api }),
+      buildDispatch: (ctx) =>
+        buildDispatcher({
+          strategy,
+          logger,
+          api,
+          replyDeps: {
+            account: ctx.account,
+            transport: ctx.transport,
+            outbox: ctx.outbox,
+          },
+        }),
     });
 
     const handle = buildPilotChannelPlugin({ logger });
