@@ -52,9 +52,21 @@ export type LifecycleDeps = {
 export class PilotLifecycle {
   private readonly deps: LifecycleDeps;
   private readonly accounts = new Map<string, AccountState>();
+  /**
+   * Most recent openclaw.json the lifecycle was started with. Plumbed into
+   * the dispatch closure so openclaw's reply pipeline receives the user's
+   * configured model (anthropic/...) instead of falling back to the
+   * compiled-in `openai/gpt-5.5` default.
+   */
+  private currentCfg: OpenClawConfig | undefined;
 
   constructor(deps: LifecycleDeps) {
     this.deps = deps;
+  }
+
+  /** Returns the most recent openclaw config the lifecycle saw. */
+  getCurrentCfg(): OpenClawConfig | undefined {
+    return this.currentCfg;
   }
 
   /** Read raw config from openclaw config, return parsed accounts. */
@@ -94,6 +106,7 @@ export class PilotLifecycle {
   }
 
   async startAll(cfg: OpenClawConfig): Promise<void> {
+    this.currentCfg = cfg;
     const parsed = this.parseAccounts(cfg);
     for (const [id, account] of parsed) {
       if (!account.enabled) {
@@ -173,10 +186,17 @@ export class PilotLifecycle {
     });
 
     // Built after the outbox so the dispatch's ReplyDispatcher can fall
-    // back to enqueueing when transport.send fails.
+    // back to enqueueing when transport.send fails. The getOpenClawConfig
+    // closure resolves at call time so a config reload between messages
+    // (file-watch path) is picked up without restarting accounts.
     const runtime = getPilotRuntime();
     const dispatch = runtime
-      ? runtime.buildDispatch({ account, transport, outbox })
+      ? runtime.buildDispatch({
+          account,
+          transport,
+          outbox,
+          getOpenClawConfig: () => this.currentCfg,
+        })
       : async (m: { text: string; senderAddress: string; messageId: string }) => {
           this.deps.logger.warn(
             "pilot: runtime not set — dropping inbound message (will be wired by openclaw at startup)",

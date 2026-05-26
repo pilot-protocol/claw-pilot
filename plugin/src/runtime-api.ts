@@ -2,7 +2,7 @@
 // rest of the plugin reads from here. Matches the setIrcRuntime / setTelegramRuntime
 // pattern used by the bundled channel plugins.
 
-import type { PluginRuntime } from "./openclaw-types.js";
+import type { OpenClawConfig, PluginRuntime } from "./openclaw-types.js";
 
 import type { InboundDispatch } from "./inbound.js";
 import type { ResolvedPilotAccount } from "./config.js";
@@ -12,13 +12,16 @@ import type { Transport } from "./transport.js";
 /**
  * Per-account runtime context. The transport + outbox are what lets the
  * inbound dispatch's ReplyDispatcher actually send the agent's reply back
- * to the peer — without them openclaw's embedded reply lane has nowhere
- * to deliver the result.
+ * to the peer. `getOpenClawConfig` returns the most recent openclaw.json the
+ * lifecycle loaded — passed to `dispatchReplyFromConfig` so the agent run
+ * uses the user's configured model (anthropic/...) instead of openclaw's
+ * compiled-in `openai/gpt-5.5` default.
  */
 export type AccountRuntimeContext = {
   account: ResolvedPilotAccount;
   transport: Transport;
   outbox?: Outbox;
+  getOpenClawConfig?: () => OpenClawConfig | undefined;
 };
 
 export type PilotRuntime = {

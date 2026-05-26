@@ -119,6 +119,14 @@ export type ReplyTransportDeps = {
   account: ResolvedPilotAccount;
   transport: Transport;
   outbox?: Outbox;
+  /**
+   * Returns the most recent openclaw.json the lifecycle loaded. The result is
+   * passed verbatim as `cfg` (and as `configOverride`) to
+   * `dispatchReplyFromConfig`. Without this, openclaw's embedded reply lane
+   * falls back to its compiled-in `DEFAULT_PROVIDER`/`DEFAULT_MODEL` constants
+   * (`openai/gpt-5.5`), regardless of what the user has actually configured.
+   */
+  getOpenClawConfig?: () => OpenClawConfig | undefined;
 };
 
 export function buildDispatcher(params: {
@@ -213,10 +221,15 @@ async function runStrategy(
 ): Promise<void> {
   switch (strategy.kind) {
     case "dispatchReplyFromConfig": {
-      const cfg =
-        typeof strategy.runtime.cfg === "function"
+      // Prefer the openclaw config the plugin's lifecycle loaded directly
+      // from openclaw.json — `runtime.cfg()` is not exposed in openclaw
+      // 2026.5.x, and falling through to an empty object lets openclaw's
+      // model resolver default to its compiled-in `openai/gpt-5.5`.
+      const cfg: OpenClawConfig =
+        replyDeps?.getOpenClawConfig?.()
+        ?? (typeof strategy.runtime.cfg === "function"
           ? strategy.runtime.cfg()
-          : ({} as OpenClawConfig);
+          : ({} as OpenClawConfig));
       // Build a per-message ReplyDispatcher bound to this peer. openclaw
       // calls dispatcher.sendFinalReply / sendBlockReply / sendToolResult as
       // the agent run produces output. Without one openclaw would crash on
@@ -257,6 +270,11 @@ async function runStrategy(
           },
           cfg,
           dispatcher,
+          // Belt-and-braces against openclaw's hardcoded openai/gpt-5.5
+          // default in the embedded reply lane — apply the same cfg as an
+          // explicit override so the resolver picks anthropic from the
+          // user's openclaw.json instead of falling back.
+          configOverride: cfg,
         });
         // Wait for any in-flight chunked sends to finish before returning
         // so beacon logs / failure reporting see the settled state.

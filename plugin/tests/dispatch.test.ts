@@ -349,6 +349,53 @@ describe("buildDispatcher passes a ReplyDispatcher to dispatchReplyFromConfig", 
     expect(sent[0]!.port).toBe(7777);
   });
 
+  it("passes the openclaw config from getOpenClawConfig as cfg AND configOverride", async () => {
+    // Regression for the openai/gpt-5.5 fallback. Without a real cfg
+    // openclaw's reply pipeline defaults to its compiled-in
+    // `DEFAULT_PROVIDER` / `DEFAULT_MODEL` (openai/gpt-5.5) regardless of
+    // what the user configured.
+    const dispatchReplyFromConfig = vi.fn().mockResolvedValue(undefined);
+    const strategy = {
+      kind: "dispatchReplyFromConfig" as const,
+      runtime: {
+        channel: { reply: { dispatchReplyFromConfig } },
+        // intentionally NO cfg() — mimics openclaw 2026.5.x
+      } as never,
+    };
+    const transport = Object.assign(new (await import("node:events")).EventEmitter(), {
+      start: async () => ({ address: "0:0000.0001.0001", nodeId: 1 }),
+      send: async () => undefined,
+      stop: async () => undefined,
+    }) as never;
+    const account = {
+      accountId: "default",
+      enabled: true,
+      socketPath: "/tmp/p.sock",
+      allowlist: new Set(["1:0000.0000.AAAA"]),
+      appPort: 7777,
+      handshakeTrustAutoApprove: true,
+      sharedSecret: undefined,
+    };
+    const fakeCfg = {
+      agents: {
+        defaults: { model: { primary: "anthropic/claude-sonnet-4-6" } },
+        list: [{ id: "main", default: true, model: { primary: "anthropic/claude-sonnet-4-6" } }],
+      },
+    } as never;
+    const dispatcher = buildDispatcher({
+      strategy,
+      logger: silentLogger(),
+      api: { runtime: {} } as never,
+      replyDeps: { account, transport, getOpenClawConfig: () => fakeCfg },
+    });
+    await dispatcher(makeMsg());
+
+    const call = dispatchReplyFromConfig.mock.calls[0]![0]!;
+    expect(call.cfg).toBe(fakeCfg);
+    expect(call.configOverride).toBe(fakeCfg);
+    expect(call.ctx.cfg).toBe(fakeCfg);
+  });
+
   it("without replyDeps, dispatcher is a noop stub that doesn't crash openclaw", async () => {
     const dispatchReplyFromConfig = vi.fn().mockResolvedValue(undefined);
     const strategy = {

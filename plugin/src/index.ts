@@ -66,6 +66,7 @@ export default definePluginEntry({
             account: ctx.account,
             transport: ctx.transport,
             outbox: ctx.outbox,
+            getOpenClawConfig: ctx.getOpenClawConfig,
           },
         }),
     });
