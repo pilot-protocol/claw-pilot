@@ -74,4 +74,82 @@ final class ConversationTests: XCTestCase {
         XCTAssertNil(c.statusMessage)
         XCTAssertNil(c.lastAckAt)
     }
+
+    // Disconnect must be safe even when the Conversation has never been
+    // wired to a Pilot — the host code may call disconnect() defensively
+    // from onDisappear regardless of prior state.
+    func testDisconnectOnIdleIsSafe() {
+        let c = Conversation()
+        c.disconnect()
+        XCTAssertEqual(c.state, .idle)
+        XCTAssertEqual(c.statusMessage, "disconnected")
+    }
+
+    // disconnect() must always update the user-visible status — without
+    // this the UI shows a stale status after the user backs out of the chat.
+    func testDisconnectSetsStatusEvenAfterRepeatedCalls() {
+        let c = Conversation()
+        c.disconnect()
+        c.disconnect()  // idempotent
+        XCTAssertEqual(c.state, .idle)
+        XCTAssertEqual(c.statusMessage, "disconnected")
+    }
+
+    // Watchdog API must be callable any number of times in either order
+    // without crashing — the host UI's refresh logic should not have to
+    // track whether the watchdog is currently running.
+    func testWatchdogStartStopIsReentrant() {
+        let c = Conversation()
+        c.startWatchdog()
+        c.startWatchdog()  // replaces — no double-fire
+        c.stopWatchdog()
+        c.stopWatchdog()   // no-op
+        c.startWatchdog()
+        c.stopWatchdog()
+        // No assertions other than "doesn't crash"; the side effect we
+        // care about is internal task cancellation, observable only via
+        // the absence of leaked timers in long-running test runs.
+    }
+
+    // The wedge-recovery watchdog must early-return when there's no live
+    // connection, otherwise it would spuriously call refresh() into a nil
+    // PilotConnection on app launch.
+    func testWatchdogCheckBeforeConnectIsNoop() {
+        let c = Conversation()
+        c.runWatchdogCheck()
+        XCTAssertNil(c.statusMessage)  // didn't trip
+        XCTAssertEqual(c.state, .idle)  // didn't try to refresh
+    }
+
+    // observeAppForeground/stopObservingAppForeground are gated by
+    // canImport(UIKit) but must still be safe call sites on macOS test
+    // builds. Calling each multiple times must be a no-op.
+    func testForegroundObserverHooksAreSafeOnAllPlatforms() {
+        let c = Conversation()
+        c.observeAppForeground()
+        c.observeAppForeground()         // idempotent
+        c.stopObservingAppForeground()
+        c.stopObservingAppForeground()   // no-op
+    }
+
+    // refresh() requires an active connection to do anything; calling it
+    // before connect() must not crash or transition state.
+    func testRefreshBeforeConnectIsNoop() {
+        let c = Conversation()
+        c.refresh()
+        XCTAssertEqual(c.state, .idle)
+        XCTAssertNil(c.statusMessage)
+    }
+
+    // Watchdog tuning knobs must round-trip — the settings page (Phase C)
+    // will mutate them and we don't want type errors when that lands.
+    func testWatchdogTuningKnobsAreMutable() {
+        let c = Conversation()
+        XCTAssertEqual(c.watchdogIntervalSeconds, 30)
+        XCTAssertEqual(c.watchdogStuckThresholdSeconds, 60)
+        c.watchdogIntervalSeconds = 10
+        c.watchdogStuckThresholdSeconds = 45
+        XCTAssertEqual(c.watchdogIntervalSeconds, 10)
+        XCTAssertEqual(c.watchdogStuckThresholdSeconds, 45)
+    }
 }

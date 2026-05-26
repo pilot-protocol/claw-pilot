@@ -108,4 +108,34 @@ final class PilotConnectionTests: XCTestCase {
         }
         XCTAssertFalse(conn.isReady)
     }
+
+    // stop() on a never-started PilotConnection must be safe — host code
+    // commonly calls disconnect() from onDisappear regardless of prior
+    // state. After stop(), isReady stays false and another stop is a no-op.
+    func testStopOnFreshConnectionIsSafe() {
+        let conn = PilotConnection(config: makeConfig())
+        conn.stop()
+        XCTAssertFalse(conn.isReady)
+        conn.stop()
+        XCTAssertFalse(conn.isReady)
+    }
+
+    // stop() after a failed reconnect() must drain whatever partial state
+    // start() left behind. The tearDown is a shared codepath; we're
+    // verifying it doesn't crash and that subsequent reconnect attempts
+    // still throw cleanly rather than hitting a precondition.
+    func testStopAfterFailedReconnectThenAnotherReconnect() async {
+        let conn = PilotConnection(config: makeConfig())
+        do {
+            try await conn.reconnect(maxAttempts: 1)
+        } catch { /* expected */ }
+        conn.stop()
+        XCTAssertFalse(conn.isReady)
+        do {
+            try await conn.reconnect(maxAttempts: 1)
+            XCTFail("expected handshake to fail against fake peer 42")
+        } catch {
+            XCTAssertFalse(conn.isReady)
+        }
+    }
 }

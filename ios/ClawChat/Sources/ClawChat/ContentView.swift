@@ -22,6 +22,9 @@ public struct ClawChatView: View {
             if case .error(let message) = convo.state {
                 errorBanner(message)
                 Divider()
+            } else if let status = convo.statusMessage, shouldShowStatusBanner(status) {
+                statusBanner(status)
+                Divider()
             }
             messageList
             composer
@@ -78,11 +81,13 @@ public struct ClawChatView: View {
 
     private var header: some View {
         HStack(spacing: 8) {
+            statePip
             VStack(alignment: .leading, spacing: 2) {
                 Text("Claw").font(.headline)
                 Text(clawConfig.claw.address)
                     .font(.caption2.monospaced())
                     .foregroundStyle(.secondary)
+                lastActivityLine
             }
             Spacer()
             statusBadge
@@ -108,6 +113,95 @@ public struct ClawChatView: View {
         .padding(.horizontal, 16)
         .padding(.vertical, 8)
         .background(.thinMaterial)
+    }
+
+    /// Always-visible colored dot in the header. Color follows the connection
+    /// state — at-a-glance signal that scales independently of label text.
+    private var statePip: some View {
+        Circle()
+            .fill(statePipColor)
+            .frame(width: 10, height: 10)
+            .overlay(
+                Circle()
+                    .stroke(.black.opacity(0.08), lineWidth: 0.5)
+            )
+            .accessibilityHidden(true)
+    }
+
+    private var statePipColor: Color {
+        switch convo.state {
+        case .idle:        return .gray
+        case .connecting:  return .yellow
+        case .ready:       return .green
+        case .error:       return .red
+        }
+    }
+
+    /// "last activity Xs ago" — updates every 5s via TimelineView. Hidden
+    /// when we've never seen an ack so first-load doesn't show "0s ago"
+    /// before anything has happened.
+    @ViewBuilder
+    private var lastActivityLine: some View {
+        if let last = convo.lastAckAt {
+            TimelineView(.periodic(from: .now, by: 5)) { context in
+                let elapsed = max(0, context.date.timeIntervalSince(last))
+                Text("last ack \(formatElapsed(elapsed)) ago")
+                    .font(.caption2.monospacedDigit())
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    private func formatElapsed(_ seconds: TimeInterval) -> String {
+        if seconds < 60 { return "\(Int(seconds))s" }
+        if seconds < 3600 { return "\(Int(seconds / 60))m" }
+        return "\(Int(seconds / 3600))h"
+    }
+
+    /// Suppress the status banner for noisy steady-state messages so the
+    /// banner only flashes when something interesting happens (refreshes,
+    /// watchdog activity, errors). The "ready as <addr>" line on first
+    /// connect is fine to omit — the state pip already covers it.
+    private func shouldShowStatusBanner(_ msg: String) -> Bool {
+        if msg.hasPrefix("ready as ") { return false }
+        return true
+    }
+
+    /// Thin info banner under the header. Surfaces watchdog activity,
+    /// reconnection progress, and other Conversation-level events that the
+    /// user otherwise wouldn't see ("watchdog tripped — 2 message(s) unacked
+    /// for >60s, reconnecting" and similar).
+    private func statusBanner(_ message: String) -> some View {
+        let palette = statusBannerPalette(message)
+        return HStack(spacing: 10) {
+            Image(systemName: palette.icon)
+                .foregroundStyle(palette.tint)
+            Text(message)
+                .font(.caption)
+                .foregroundStyle(.primary)
+                .lineLimit(2)
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 8)
+        .background(palette.tint.opacity(0.08))
+    }
+
+    private func statusBannerPalette(_ msg: String) -> (icon: String, tint: Color) {
+        if msg.localizedCaseInsensitiveContains("fail")
+            || msg.localizedCaseInsensitiveContains("error")
+            || msg.localizedCaseInsensitiveContains("wedge") {
+            return ("exclamationmark.triangle.fill", .orange)
+        }
+        if msg.localizedCaseInsensitiveContains("reconnect")
+            || msg.localizedCaseInsensitiveContains("refresh")
+            || msg.localizedCaseInsensitiveContains("watchdog") {
+            return ("arrow.clockwise", .yellow)
+        }
+        if msg.localizedCaseInsensitiveContains("disconnect") {
+            return ("powersleep", .gray)
+        }
+        return ("info.circle", .blue)
     }
 
     private var refreshDisabled: Bool {
