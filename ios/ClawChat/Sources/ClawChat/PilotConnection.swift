@@ -419,13 +419,36 @@ public final class PilotConnection {
     }
 
     public func stop() {
+        tearDownDaemon()
+        recvContinuation.finish()
+        ackContinuation.finish()
+        errorContinuation.finish()
+    }
+
+    /// Tear down the embedded Pilot daemon and rebuild it from scratch.
+    /// Same effect as `stop()` + `start()` but **keeps the AsyncStream
+    /// continuations alive** so existing subscribers (Conversation,
+    /// notification observers) keep receiving messages without resubscribing.
+    ///
+    /// The wedge fix: iOS suspends the app's UDP socket when the app is
+    /// backgrounded for any meaningful duration. The Pilot daemon stays alive
+    /// in-process but its socket is dead; subsequent `send()` calls either
+    /// throw or silently no-op into the void. The only reliable recovery is
+    /// a full daemon rebuild — that's what app-restart used to be the workaround
+    /// for. Call this on app return-to-foreground, or after a stretch of
+    /// unacknowledged sends, to recover without forcing the user to restart.
+    public func reconnect(maxAttempts: Int = 4) async throws {
+        tearDownDaemon()
+        try await start(maxAttempts: maxAttempts)
+    }
+
+    private func tearDownDaemon() {
         recvTask?.cancel()
         recvTask = nil
         try? pilot?.stop()
         pilot = nil
         isReady = false
-        recvContinuation.finish()
-        ackContinuation.finish()
-        errorContinuation.finish()
+        selfAddress = nil
+        selfNodeId = nil
     }
 }

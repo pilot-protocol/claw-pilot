@@ -75,4 +75,42 @@ final class PilotConnectionTests: XCTestCase {
         XCTAssertTrue(String(describing: ConnectionError.handshakeFailed("boom")).contains("boom"))
         XCTAssertTrue(String(describing: ConnectionError.sendFailed("boom")).contains("boom"))
     }
+
+    // Wedge-recovery contract: reconnect() must be safe to call when the
+    // connection has never been started (no Pilot to tear down) — it just
+    // proceeds to start(). The real start() will fail in unit tests because
+    // there's no daemon backing the SDK; what we're asserting here is that
+    // the tearDown path doesn't blow up on a fresh connection, and that
+    // failure propagates as a normal Error (not a crash or precondition).
+    func testReconnectOnFreshConnectionFailsCleanly() async {
+        let conn = PilotConnection(config: makeConfig())
+        do {
+            try await conn.reconnect(maxAttempts: 1)
+            // Reaching here would mean a real Pilot daemon booted — in unit
+            // tests we don't have one. The SDK call should throw.
+            XCTFail("expected reconnect to throw — no real Pilot daemon in unit-test env")
+        } catch {
+            // Any thrown error is acceptable; we're verifying the tearDown
+            // path doesn't precondition-fail and that reconnect propagates
+            // failures cleanly. After failure, isReady must be false.
+            XCTAssertFalse(conn.isReady)
+            XCTAssertNil(conn.selfAddress)
+        }
+    }
+
+    // Calling reconnect() twice in a row must not crash even when the first
+    // attempt left no Pilot instance behind. Defensive against the "user
+    // hammers the Reconnect button" UX.
+    func testReconnectIsIdempotentOnFailure() async {
+        let conn = PilotConnection(config: makeConfig())
+        for _ in 0..<3 {
+            do {
+                try await conn.reconnect(maxAttempts: 1)
+            } catch {
+                // Expected — no real daemon. Loop verifies subsequent calls
+                // don't trip on residual state.
+            }
+        }
+        XCTAssertFalse(conn.isReady)
+    }
 }

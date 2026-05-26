@@ -78,6 +78,18 @@ public final class Conversation: ObservableObject {
     @Published public private(set) var messages: [ChatMessage] = []
     @Published public private(set) var state: ConnectionState = .idle
     @Published public var draft: String = ""
+    /// Human-readable status line for the UI to surface. Updated whenever the
+    /// connection state or watchdog activity meaningfully changes — render
+    /// this somewhere visible so users can tell what's happening when a send
+    /// silently stalls. Examples:
+    ///   "ready"
+    ///   "reconnecting — handshake retry"
+    ///   "watchdog tripped — 2 message(s) unacked for >60s, reconnecting"
+    ///   "reconnected after wedge (took 2.1s)"
+    @Published public private(set) var statusMessage: String?
+    /// Wall-clock time the most recent ack landed. Lets the UI render
+    /// "last activity Xs ago" without scanning the whole message log.
+    @Published public private(set) var lastAckAt: Date?
 
     public private(set) var connection: PilotConnection?
     private var listenerTask: Task<Void, Never>?
@@ -125,6 +137,7 @@ public final class Conversation: ObservableObject {
                     for await id in ackStream {
                         await MainActor.run { [weak self] in
                             self?.updateDelivery(id: id, to: .delivered)
+                            self?.lastAckAt = Date()
                         }
                     }
                 }
@@ -153,10 +166,17 @@ public final class Conversation: ObservableObject {
                 try await conn.start()
                 guard let self else { return }
                 self.state = .ready(selfAddress: conn.selfAddress ?? "?")
+                self.statusMessage = "ready as \(conn.selfAddress ?? "?")"
                 // Drain anything that was queued while we were disconnected.
                 self.drainOutbox()
+                // On iOS, auto-recover from the UDP-socket close that happens
+                // when the app is suspended. No-op on macOS.
+                self.observeAppForeground()
+                // Background watchdog: catches mid-session wedges.
+                self.startWatchdog()
             } catch {
                 self?.state = .error(String(describing: error))
+                self?.statusMessage = "connect failed: \(String(describing: error))"
             }
         }
     }
@@ -303,11 +323,14 @@ public final class Conversation: ObservableObject {
     }
 
     public func disconnect() {
+        stopObservingAppForeground()
+        stopWatchdog()
         listenerTask?.cancel()
         listenerTask = nil
         connection?.stop()
         connection = nil
         state = .idle
+        statusMessage = "disconnected"
     }
 
     /// Send a one-shot diagnostic message — the claw plugin emits a
@@ -333,9 +356,12 @@ public final class Conversation: ObservableObject {
         }
     }
 
-    /// Re-run the trust handshake against the configured claw. If we're not
-    /// connected yet, behaves like a full connect; if we are, re-handshakes
-    /// without tearing down the Pilot daemon.
+    /// Recover from a wedged daemon. Tries a lightweight retryHandshake first
+    /// (cheap — preserves daemon state); if that throws, escalates to a full
+    /// daemon teardown + restart via `reconnect()`. Use this for the iOS
+    /// "app returned to foreground after backgrounding" case where the
+    /// daemon's UDP socket was silently closed by the OS, and any time the
+    /// user taps a Refresh / Reconnect button.
     public func refresh() {
         guard let conn = connection else {
             // No active connection — caller should connect() first.
@@ -345,13 +371,129 @@ public final class Conversation: ObservableObject {
         if !wasReady {
             state = .connecting
         }
+        statusMessage = "refreshing — retrying handshake"
+        let started = Date()
         Task { [weak self] in
             do {
                 try await conn.retryHandshake()
                 self?.state = .ready(selfAddress: conn.selfAddress ?? "?")
+                self?.statusMessage = "refreshed (handshake) — \(elapsedString(started))"
+                self?.drainOutbox()
             } catch {
-                self?.state = .error(String(describing: error))
+                // Handshake failed — daemon's likely wedged. Tear down and
+                // rebuild from scratch. This is what app-restart used to do.
+                await MainActor.run { [weak self] in
+                    self?.state = .connecting
+                    self?.statusMessage = "handshake failed — rebuilding daemon"
+                }
+                do {
+                    try await conn.reconnect()
+                    self?.state = .ready(selfAddress: conn.selfAddress ?? "?")
+                    self?.statusMessage = "reconnected after wedge — \(elapsedString(started))"
+                    self?.drainOutbox()
+                } catch {
+                    self?.state = .error(String(describing: error))
+                    self?.statusMessage = "reconnect failed: \(String(describing: error))"
+                }
             }
         }
     }
+
+    /// Start the wedge-recovery watchdog. Polls every
+    /// `watchdogIntervalSeconds`; if any outbound message has been stuck in
+    /// `.sending` / `.sent` for longer than `watchdogStuckThresholdSeconds`,
+    /// auto-fires a `refresh()` (which escalates to `reconnect()` on
+    /// handshake failure). Started automatically in `connect()`; you only
+    /// need to call this manually if you stopped + want to resume.
+    public func startWatchdog() {
+        stopWatchdog()
+        watchdogTask = Task { [weak self] in
+            while !Task.isCancelled {
+                let interval = await MainActor.run { self?.watchdogIntervalSeconds ?? 30 }
+                try? await Task.sleep(nanoseconds: interval * 1_000_000_000)
+                if Task.isCancelled { return }
+                await MainActor.run { [weak self] in
+                    self?.runWatchdogCheck()
+                }
+            }
+        }
+    }
+
+    public func stopWatchdog() {
+        watchdogTask?.cancel()
+        watchdogTask = nil
+    }
+
+    /// One-shot wedge check. Exposed for tests; production code lets the
+    /// watchdog task call this on its interval.
+    public func runWatchdogCheck() {
+        guard let conn = connection, conn.isReady else { return }
+        let now = Date()
+        let threshold = watchdogStuckThresholdSeconds
+        let stuck = messages.filter { msg in
+            guard msg.sender == .me else { return false }
+            switch msg.delivery {
+            case .sending, .sent:
+                return now.timeIntervalSince(msg.ts) > threshold
+            case .delivered, .failed:
+                return false
+            }
+        }
+        if !stuck.isEmpty {
+            statusMessage = "watchdog tripped — \(stuck.count) message(s) unacked for >\(Int(threshold))s, reconnecting"
+            refresh()
+        }
+    }
+
+    #if canImport(UIKit)
+    private var foregroundObserver: NSObjectProtocol?
+    #endif
+
+    private var watchdogTask: Task<Void, Never>?
+    /// How often the watchdog polls for stuck outbound messages. Public so
+    /// the host can dial it down for an idle screen or tighten it for an
+    /// active chat — defaults are tuned for a typical foreground session.
+    public var watchdogIntervalSeconds: UInt64 = 30
+    /// An outbound message stuck in `.sending`/`.sent` longer than this is
+    /// taken as a wedge signal. Must be greater than the agent's typical
+    /// reply time (the plugin acks after dispatch).
+    public var watchdogStuckThresholdSeconds: TimeInterval = 60
+
+    /// Subscribe to iOS app-foreground notifications so a return-to-foreground
+    /// automatically refreshes the connection — recovers from the silent
+    /// UDP-socket close iOS performs when the app is suspended. No-op on
+    /// platforms without UIKit (macOS unit tests).
+    ///
+    /// Safe to call multiple times; only the first call installs the observer.
+    /// Call from the host scene/app once after `connect()`.
+    public func observeAppForeground() {
+        #if canImport(UIKit)
+        guard foregroundObserver == nil else { return }
+        let nc = NotificationCenter.default
+        // Use the legacy UIApplication notification name as a string so this
+        // compiles without an explicit `import UIKit` (which the SwiftPM
+        // library target may not have configured under all schemes).
+        let name = Notification.Name("UIApplicationDidBecomeActiveNotification")
+        foregroundObserver = nc.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
+            self?.refresh()
+        }
+        #endif
+    }
+
+    /// Stop listening for app-foreground notifications. Pair with disconnect().
+    public func stopObservingAppForeground() {
+        #if canImport(UIKit)
+        if let token = foregroundObserver {
+            NotificationCenter.default.removeObserver(token)
+            foregroundObserver = nil
+        }
+        #endif
+    }
+}
+
+/// Format the elapsed time since `start` as a short human string for the
+/// status line ("0.4s", "2.1s", "12.7s").
+private func elapsedString(_ start: Date) -> String {
+    let dt = Date().timeIntervalSince(start)
+    return String(format: "%.1fs", dt)
 }

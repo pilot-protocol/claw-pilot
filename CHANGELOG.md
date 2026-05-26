@@ -5,6 +5,26 @@ All notable changes to claw-pilot. Format loosely follows [Keep a Changelog](htt
 ## [Unreleased]
 
 ### Fixed
+- **iOS: wedge recovery.** The embedded Pilot daemon silently loses its UDP
+  socket when iOS suspends the app — sends then either throw or no-op into
+  the void, and the only user-visible workaround was a full app restart.
+  Three layers of recovery now:
+  - `PilotConnection.reconnect()` — full daemon teardown + rebuild that
+    preserves the `messages`/`acks`/`errors` AsyncStream continuations so
+    subscribers keep flowing without resubscribing.
+  - `Conversation.refresh()` escalates: tries the cheap `retryHandshake()`
+    first, falls through to full `reconnect()` if the handshake throws.
+  - `observeAppForeground()` auto-fires `refresh()` on
+    `UIApplicationDidBecomeActiveNotification` (no-op on macOS).
+  - Background watchdog (`startWatchdog()`) polls every 30s; any outbound
+    message stuck in `.sending`/`.sent` longer than 60s trips `refresh()`.
+- **Plugin: pass the real openclaw config to `dispatchReplyFromConfig`.**
+  When `runtime.cfg()` isn't exposed (openclaw 2026.5.x), the dispatch path
+  was passing `cfg: {}`, which made openclaw's reply pipeline fall back to
+  its compiled-in `DEFAULT_PROVIDER`/`DEFAULT_MODEL` (`openai/gpt-5.5`). Now
+  the lifecycle's loaded `openclaw.json` is plumbed through
+  `AccountRuntimeContext.getOpenClawConfig` and supplied as both `cfg` and
+  `configOverride`.
 - **Plugin: wire a real `ReplyDispatcher` into `dispatchReplyFromConfig`.** The
   call was passing `{ ctx, cfg }` but openclaw's signature requires
   `{ ctx, cfg, dispatcher }`; the undefined dispatcher was what produced
@@ -19,6 +39,12 @@ All notable changes to claw-pilot. Format loosely follows [Keep a Changelog](htt
   silently.
 
 ### Added
+- **iOS observability.** `Conversation` now publishes `statusMessage`
+  (human-readable connection / watchdog activity for the UI to display) and
+  `lastAckAt` (timestamp of the most recent ack). Examples:
+  `"ready as 0:0000.XXXX.XXXX"`, `"watchdog tripped — 2 message(s) unacked
+  for >60s, reconnecting"`, `"reconnected after wedge — 2.1s"`. The UI
+  needs to render `statusMessage` to make this visible.
 - `src/reply-dispatcher.ts` — `buildPilotReplyDispatcher`, a per-peer factory
   that turns openclaw `ReplyPayload`s into chunked `agent` wire envelopes via
   the same `chunkAgentText` + `encodeEnvelope` + outbox path the

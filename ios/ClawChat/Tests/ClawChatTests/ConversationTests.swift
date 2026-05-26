@@ -56,4 +56,22 @@ final class ConversationTests: XCTestCase {
             XCTAssertEqual(att.kind, k)
         }
     }
+
+    // Watchdog never trips on an idle conversation (no connection, no
+    // outbound messages). Used to be invisible; now it must be observably
+    // safe to call.
+    func testWatchdogCheckOnIdleConversationIsNoop() {
+        let c = Conversation()
+        c.runWatchdogCheck()
+        XCTAssertEqual(c.state, .idle)
+        XCTAssertNil(c.statusMessage)
+    }
+
+    // Status message field is the observability surface the UI renders.
+    // Init state must be nil so the UI can decide whether to show anything.
+    func testInitialStatusMessageIsNil() {
+        let c = Conversation()
+        XCTAssertNil(c.statusMessage)
+        XCTAssertNil(c.lastAckAt)
+    }
 }
