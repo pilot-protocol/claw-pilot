@@ -13,6 +13,7 @@ import { tmpdir } from "node:os";
 
 import type { ResolvedPilotAccount } from "./config.js";
 import { decideAllowlist } from "./allowlist.js";
+import type { PeerAddressCache } from "./peer-address.js";
 import type { IncomingDatagram, Transport } from "./transport.js";
 import {
   MediaReassembler,
@@ -94,6 +95,13 @@ export type InboundDeps = {
    * Fires before reassembly, so it includes individual chunks too.
    */
   onPeerProofOfLife?: (peer: string) => void;
+  /**
+   * Optional. Populated on every inbound `srcAddr` so the outbound
+   * adapter can resolve a node_id-form `to` back to the correct network.
+   * Without this, outbound coercion defaults to network 0 — fine for the
+   * common case but wrong for multi-network deployments.
+   */
+  peerAddressCache?: PeerAddressCache;
 };
 
 export class InboundPipeline {
@@ -215,6 +223,11 @@ export class InboundPipeline {
         err: (e as Error).message,
       });
     }
+
+    // Remember (nodeId → network) so outbound calls that arrive with a
+    // bare node_id `to` (openclaw's reply routing sometimes does this)
+    // can be coerced back to the right address.
+    this.deps.peerAddressCache?.remember(peer);
 
     if (env.kind === "ack" || env.kind === "error") {
       // Out of scope for v0 — log and drop.

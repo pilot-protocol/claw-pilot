@@ -9,6 +9,7 @@ import type { ChannelOutboundAdapter, OutboundDeliveryResult } from "./openclaw-
 
 import type { ResolvedPilotAccount } from "./config.js";
 import type { Outbox } from "./outbox.js";
+import { isPilotAddress, looksLikeNodeId, nodeIdToAddress, PeerAddressCache } from "./peer-address.js";
 import type { Transport } from "./transport.js";
 import {
   WIRE_VERSION,
@@ -43,7 +44,16 @@ export type OutboundDeps = {
    */
   resolveOutbox?: (accountId: string | null | undefined) => Outbox | undefined;
   /** Optional logger for outbox events. */
-  logger?: { info: (msg: string, meta?: Record<string, unknown>) => void };
+  logger?: { info: (msg: string, meta?: Record<string, unknown>) => void;
+    warn?: (msg: string, meta?: Record<string, unknown>) => void };
+  /**
+   * Resolves a `to` value that arrived as a bare node_id (e.g. `"211747"`)
+   * back to a proper pilot address (`0:0000.0003.3B23`). openclaw's outbound
+   * routing sometimes hands us the agent-side identifier instead of the
+   * channel-side address; without this coercion, `transport.send` rejects
+   * with `invalid address` and every chunk pollutes the outbox forever.
+   */
+  resolvePeerCache?: (accountId: string | null | undefined) => PeerAddressCache | undefined;
 };
 
 /**
@@ -67,7 +77,14 @@ export function buildPilotOutbound(deps: OutboundDeps): ChannelOutboundAdapter {
       if (!transport) {
         return failResult(`pilot: no live transport for ${ctx.accountId ?? "<default>"}`);
       }
-      const peerAddr = stripPort(ctx.to);
+      const peerAddr = resolvePeerAddr(ctx.to, deps.resolvePeerCache?.(ctx.accountId ?? null));
+      if (!peerAddr) {
+        deps.logger?.warn?.("pilot outbound: refusing send — unresolvable `to`", {
+          to: ctx.to,
+          accountId: ctx.accountId ?? "default",
+        });
+        return failResult(`pilot: cannot resolve peer address from "${ctx.to}" — expected N:XXXX.YYYY.YYYY or a known node_id`);
+      }
       const envelopes = chunkAgentText(ctx.text, newId());
       const sendResult = await sendOrEnqueue({
         envelopes,
@@ -101,6 +118,14 @@ export function buildPilotOutbound(deps: OutboundDeps): ChannelOutboundAdapter {
       if (!transport) {
         return failResult(`pilot: no live transport for ${ctx.accountId ?? "<default>"}`);
       }
+      const peerAddr = resolvePeerAddr(ctx.to, deps.resolvePeerCache?.(ctx.accountId ?? null));
+      if (!peerAddr) {
+        deps.logger?.warn?.("pilot outbound: refusing media send — unresolvable `to`", {
+          to: ctx.to,
+          accountId: ctx.accountId ?? "default",
+        });
+        return failResult(`pilot: cannot resolve peer address from "${ctx.to}" — expected N:XXXX.YYYY.YYYY or a known node_id`);
+      }
       try {
         const bytes = await loadMedia(ctx.mediaUrl, ctx.mediaReadFile, deps.mediaTrustRoots);
         const filename = pathFilename(ctx.mediaUrl);
@@ -115,7 +140,6 @@ export function buildPilotOutbound(deps: OutboundDeps): ChannelOutboundAdapter {
           caption: ctx.text && ctx.text.length > 0 ? ctx.text : undefined,
           id: newId(),
         });
-        const peerAddr = stripPort(ctx.to);
         return await sendOrEnqueue({
           envelopes,
           peerAddr,
@@ -253,6 +277,32 @@ function stripPort(target: string): string {
   // Accept "addr" or "addr:port"; canonicalize to bare address.
   const m = target.match(/^([0-9]+:[0-9A-Fa-f.]+)(?::\d+)?$/);
   return m ? m[1]! : target;
+}
+
+/**
+ * Resolve a host-supplied `to` to a pilot address that `transport.send`
+ * accepts. Handles:
+ *   - already-an-address (with or without :port): stripPort
+ *   - bare numeric node_id: synthesise the address (looking up the network
+ *     in the peer cache if we've seen this peer inbound, defaulting to 0)
+ *   - anything else: undefined → caller refuses the send rather than letting
+ *     it fall through to a wire-layer rejection that pollutes the outbox
+ */
+function resolvePeerAddr(
+  to: string,
+  peerCache: PeerAddressCache | undefined,
+): string | undefined {
+  if (isPilotAddress(to)) return stripPort(to);
+  if (looksLikeNodeId(to)) {
+    // Prefer the cache (knows the network for peers we've seen).
+    if (peerCache) return peerCache.resolve(to);
+    // Fall back to algorithmic conversion against network 0 — works for
+    // every peer in network 0 (the common case) and is harmless if the
+    // peer turns out to be elsewhere (the wire send will reject with a
+    // more specific error).
+    return nodeIdToAddress(to);
+  }
+  return undefined;
 }
 
 // Re-export a constant used in tests + runtime so wire & outbound stay in sync.

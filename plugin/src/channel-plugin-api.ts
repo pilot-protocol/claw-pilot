@@ -101,6 +101,8 @@ export function buildPilotChannelPlugin(deps: BuildPilotPluginDeps): PilotChanne
         lifecycle.getAccount(accountId ?? DEFAULT_ACCOUNT_ID)?.transport,
       resolveOutbox: (accountId) =>
         lifecycle.getOutbox(accountId ?? DEFAULT_ACCOUNT_ID),
+      resolvePeerCache: (accountId) =>
+        lifecycle.getAccount(accountId ?? DEFAULT_ACCOUNT_ID)?.peerAddressCache,
       logger: deps.logger,
     }),
     directory: buildPilotDirectory({ resolveAccount }),

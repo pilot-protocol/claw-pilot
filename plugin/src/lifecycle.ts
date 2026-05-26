@@ -10,6 +10,7 @@ import type { PilotAccountConfig, ResolvedPilotAccount } from "./config.js";
 import { DEFAULT_ACCOUNT_ID, resolveAccount } from "./config.js";
 import { InboundPipeline, type InboundLogger } from "./inbound.js";
 import { Outbox } from "./outbox.js";
+import { PeerAddressCache } from "./peer-address.js";
 import { getPilotRuntime } from "./runtime-api.js";
 import type { Transport, TransportInfo } from "./transport.js";
 
@@ -29,6 +30,7 @@ export type AccountState = {
   info: TransportInfo | null;
   outbox: Outbox;
   drainTimer: NodeJS.Timeout | null;
+  peerAddressCache: PeerAddressCache;
 };
 
 export type LifecycleDeps = {
@@ -184,6 +186,9 @@ export class PilotLifecycle {
     const outbox = new Outbox({
       path: join(outboxDir, `outbox-${account.accountId}.json`),
     });
+    // Per-account peer cache. Inbound writes (nodeId → network), outbound
+    // reads to coerce numeric `to` values openclaw sometimes hands us.
+    const peerAddressCache = new PeerAddressCache();
 
     // Built after the outbox so the dispatch's ReplyDispatcher can fall
     // back to enqueueing when transport.send fails. The getOpenClawConfig
@@ -211,6 +216,7 @@ export class PilotLifecycle {
       // Reuse the same transport for ACKs — the sender Driver inside it is
       // the one with permission to send to the peer.
       ackTransport: transport,
+      peerAddressCache,
       // Drain queued outbound for this peer the moment we see ANY traffic
       // from them — proof of life means they're reachable right now.
       onPeerProofOfLife: (peer) => {
@@ -259,7 +265,7 @@ export class PilotLifecycle {
     }, drainIntervalMs);
     if (drainTimer.unref) drainTimer.unref();
 
-    const state: AccountState = { account, transport, pipeline, info, outbox, drainTimer };
+    const state: AccountState = { account, transport, pipeline, info, outbox, drainTimer, peerAddressCache };
     this.accounts.set(account.accountId, state);
     return state;
   }

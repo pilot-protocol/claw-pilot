@@ -117,4 +117,58 @@ describe("buildPilotOutbound", () => {
     expect(r.ok).toBe(false);
     expect(r.error?.message).toMatch(/daemon unreachable/);
   });
+
+  // Regression for the openclaw-passes-node_id bug. Before the peer-address
+  // coercion the wire reject would queue every chunk to the outbox forever
+  // (the outbox key is the same bad numeric string).
+  it("coerces a numeric node_id `to` back to an address before sending", async () => {
+    const transport = new FakeTransport();
+    const account = resolveAccount({ allowlist: [ALICE_ADDR] });
+    const out = buildPilotOutbound({
+      resolveAccount: () => account,
+      resolveTransport: () => transport,
+    });
+    // 211747 → 0:0000.0003.3B23 (the real phone node from production logs).
+    const r = (await out.sendText!(ctxFor("211747"))) as { ok: boolean };
+    expect(r.ok).toBe(true);
+    expect(transport.sent).toHaveLength(1);
+    expect(transport.sent[0]!.peerAddr).toBe("0:0000.0003.3B23");
+  });
+
+  // Hard-reject path: malformed `to` that's neither an address nor a
+  // node_id. We refuse synchronously instead of letting transport.send
+  // throw and the outbox swallow 126 chunks.
+  it("refuses send (no transport call, no outbox queue) when `to` is unparseable", async () => {
+    const transport = new FakeTransport();
+    const account = resolveAccount({ allowlist: [ALICE_ADDR] });
+    let warned = false;
+    const out = buildPilotOutbound({
+      resolveAccount: () => account,
+      resolveTransport: () => transport,
+      logger: { info: () => {}, warn: () => { warned = true; } },
+    });
+    const r = (await out.sendText!(ctxFor("not-an-address"))) as { ok: boolean; error?: Error };
+    expect(r.ok).toBe(false);
+    expect(r.error?.message).toMatch(/cannot resolve peer address/);
+    expect(transport.sent).toHaveLength(0);
+    expect(warned).toBe(true);
+  });
+
+  // Peer cache lets us pick the right network for known peers. Without the
+  // cache the fallback always uses network 0, which is wrong for any
+  // non-default-network deployment.
+  it("uses the per-account peer cache to resolve into the right network", async () => {
+    const { PeerAddressCache } = await import("../src/peer-address.js");
+    const transport = new FakeTransport();
+    const account = resolveAccount({ allowlist: [ALICE_ADDR] });
+    const cache = new PeerAddressCache();
+    cache.remember("7:0000.0003.3B23"); // observed inbound from network 7
+    const out = buildPilotOutbound({
+      resolveAccount: () => account,
+      resolveTransport: () => transport,
+      resolvePeerCache: () => cache,
+    });
+    await out.sendText!(ctxFor("211747"));
+    expect(transport.sent[0]!.peerAddr).toBe("7:0000.0003.3B23");
+  });
 });
