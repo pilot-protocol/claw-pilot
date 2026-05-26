@@ -243,7 +243,17 @@ public struct ClawChatView: View {
                     }
                 }
                 .padding(16)
+                // Make the empty space between/around bubbles tappable so a
+                // tap anywhere in the chat area dismisses the keyboard.
+                // textSelection on bubbles still captures their own taps —
+                // this only fires on the surrounding gap.
+                .contentShape(Rectangle())
+                .onTapGesture {
+                    dismissKeyboard()
+                }
             }
+            // Drag-down-to-dismiss while scrolling (iOS 16+).
+            .scrollDismissesKeyboard(.interactively)
             .onChange(of: convo.messages.count) { _ in
                 if let last = convo.messages.last {
                     withAnimation(.easeOut(duration: 0.15)) {
@@ -252,6 +262,18 @@ public struct ClawChatView: View {
                 }
             }
         }
+    }
+
+    /// Dismiss the soft keyboard regardless of which TextField currently has
+    /// focus. Walks the responder chain via UIApplication so we don't have
+    /// to thread @FocusState through every composer-adjacent view.
+    private func dismissKeyboard() {
+        #if canImport(UIKit)
+        UIApplication.shared.sendAction(
+            #selector(UIResponder.resignFirstResponder),
+            to: nil, from: nil, for: nil,
+        )
+        #endif
     }
 
     @State private var showFilePicker = false
