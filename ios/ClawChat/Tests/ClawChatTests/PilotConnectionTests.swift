@@ -53,6 +53,21 @@ final class PilotConnectionTests: XCTestCase {
         XCTAssertEqual(cfg.clawAppPort, 7777)
         XCTAssertEqual(cfg.trustTimeoutMs, 30_000)
         XCTAssertTrue(cfg.trustAutoApprove)
+        // Energy: default keepalive bumped from the SDK's 30s to 120s; we
+        // tunnel via the rendezvous relay so the aggressive keepalive
+        // cadence only burned the cellular radio.
+        XCTAssertEqual(cfg.keepaliveSeconds, 120)
+    }
+
+    // Operator can dial keepalive up further when on slow/expensive
+    // networks. Plumbed through to the SDK in start().
+    func testKeepaliveIsOverridable() {
+        let cfg = PilotConnection.Config(
+            dataDir: URL(fileURLWithPath: "/tmp/x"),
+            claw: ClawAddress(address: "2:1111.2222.3333", nodeId: 7),
+            keepaliveSeconds: 240
+        )
+        XCTAssertEqual(cfg.keepaliveSeconds, 240)
     }
 
     func testClawAddressEquality() {

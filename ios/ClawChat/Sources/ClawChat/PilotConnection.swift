@@ -102,6 +102,13 @@ public final class PilotConnection {
         /// success. Used to avoid pinning the phone's pilot identity (which
         /// may change on each launch).
         public var sharedSecret: String
+        /// How often the daemon emits NAT keepalives. The original SDK default
+        /// is 30s — appropriate for direct NAT-traversed peers. We almost
+        /// always tunnel via the rendezvous relay (visible as `relay=true`
+        /// in daemon logs), so the keepalive only needs to be fast enough to
+        /// keep the registry-side relay session warm. 120s halves radio
+        /// wake-ups versus the default with no observable hit to delivery.
+        public var keepaliveSeconds: Int
 
         public init(
             dataDir: URL,
@@ -110,7 +117,8 @@ public final class PilotConnection {
             clawAppPort: UInt16 = 7777,
             trustTimeoutMs: UInt32 = 30_000,
             trustAutoApprove: Bool = true,
-            sharedSecret: String = ""
+            sharedSecret: String = "",
+            keepaliveSeconds: Int = 120
         ) {
             self.dataDir = dataDir
             self.socketBasename = socketBasename
@@ -119,6 +127,7 @@ public final class PilotConnection {
             self.trustTimeoutMs = trustTimeoutMs
             self.trustAutoApprove = trustAutoApprove
             self.sharedSecret = sharedSecret
+            self.keepaliveSeconds = keepaliveSeconds
         }
 
         /// We never opt into Network 9 / the public directory. The Pilot daemon
@@ -193,7 +202,7 @@ public final class PilotConnection {
             dataDir: cfg.dataDir,
             socketPath: socketName,
             trustAutoApprove: cfg.trustAutoApprove,
-            keepaliveSeconds: 30
+            keepaliveSeconds: cfg.keepaliveSeconds
         ))
         self.pilot = p
         self.selfAddress = p.start.address

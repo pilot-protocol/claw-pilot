@@ -7,6 +7,7 @@ import SwiftUI
 
 public struct ClawChatView: View {
     @StateObject private var convo: Conversation = Conversation()
+    @Environment(\.scenePhase) private var scenePhase
     private let clawConfig: PilotConnection.Config
     private let notificationTitle: String?
     /// Transient toast text that appears when the user taps an inline pilot
@@ -52,32 +53,59 @@ public struct ClawChatView: View {
                     .transition(.opacity.combined(with: .move(edge: .bottom)))
             }
         }
-        .onAppear {
-            if convo.state == .idle {
-                // Wire local notifications for claw → me messages that arrive
-                // while the user isn't actively looking at the chat. No-op on
-                // platforms without UserNotifications.
-                NotificationCoordinator.shared.requestAuthorizationIfNeeded()
-                let title = notificationTitle ?? "Claw"
-                convo.onIncoming = { msg in
-                    let preview = msg.text.isEmpty
-                        ? (msg.attachments.first.map { "[\($0.kind.rawValue)]" } ?? "(attachment)")
-                        : msg.text
-                    NotificationCoordinator.shared.postIncoming(
-                        title: title,
-                        body: preview,
-                        threadId: title,
-                    )
-                }
-                // Persist chat history per profile + arm the auto-retry outbox
-                // so messages typed while offline drain when we reconnect.
-                convo.messageStore = MessageStore(profileDir: clawConfig.dataDir)
-                convo.connect(config: clawConfig)
-            }
-        }
+        .onAppear { ensureConnected() }
         .onDisappear {
             convo.disconnect()
         }
+        // Energy: when the OS moves us to .background, tear the daemon down
+        // entirely rather than letting iOS half-suspend our UDP socket.
+        // The existing wedge-recovery (cycled socket basename + grace period)
+        // makes the reconnect on return-to-foreground reliable. Pairs with
+        // observeAppForeground for the brief .inactive ↔ .active flicker
+        // case (Control Center, app switcher peek) where we stay alive.
+        .onChange(of: scenePhase) { newPhase in
+            switch newPhase {
+            case .background:
+                if convo.state != .idle {
+                    convo.disconnect()
+                }
+            case .active:
+                ensureConnected()
+            case .inactive:
+                // Transient state (app switcher peek, incoming notification
+                // banner, etc.) — don't churn the connection.
+                break
+            @unknown default:
+                break
+            }
+        }
+    }
+
+    /// Boot the connection if it isn't already running. Idempotent — safe
+    /// to call from both `.onAppear` (first-launch) and the scenePhase
+    /// `.active` handler (return-from-background, after we proactively
+    /// disconnected on `.background`).
+    private func ensureConnected() {
+        guard convo.state == .idle else { return }
+        // Wire local notifications for claw → me messages that arrive
+        // while the user isn't actively looking at the chat. No-op on
+        // platforms without UserNotifications.
+        NotificationCoordinator.shared.requestAuthorizationIfNeeded()
+        let title = notificationTitle ?? "Claw"
+        convo.onIncoming = { msg in
+            let preview = msg.text.isEmpty
+                ? (msg.attachments.first.map { "[\($0.kind.rawValue)]" } ?? "(attachment)")
+                : msg.text
+            NotificationCoordinator.shared.postIncoming(
+                title: title,
+                body: preview,
+                threadId: title,
+            )
+        }
+        // Persist chat history per profile + arm the auto-retry outbox
+        // so messages typed while offline drain when we reconnect.
+        convo.messageStore = MessageStore(profileDir: clawConfig.dataDir)
+        convo.connect(config: clawConfig)
     }
 
     private func errorBanner(_ message: String) -> some View {
@@ -170,13 +198,16 @@ public struct ClawChatView: View {
         }
     }
 
-    /// "last activity Xs ago" — updates every 5s via TimelineView. Hidden
-    /// when we've never seen an ack so first-load doesn't show "0s ago"
-    /// before anything has happened.
+    /// "last activity Xs ago" — refreshed every 30s instead of every 5s for
+    /// energy reasons. The granularity of the displayed string (`Xs` /
+    /// `Xm` / `Xh`) means sub-30s precision wasn't visible anyway above the
+    /// "Xs" bucket, and the `lastAckAt` change itself triggers a re-render
+    /// the instant a new ack lands. Hidden when no ack has ever arrived so
+    /// first-load doesn't briefly flash "0s ago".
     @ViewBuilder
     private var lastActivityLine: some View {
         if let last = convo.lastAckAt {
-            TimelineView(.periodic(from: .now, by: 5)) { context in
+            TimelineView(.periodic(from: .now, by: 30)) { context in
                 let elapsed = max(0, context.date.timeIntervalSince(last))
                 Text("last ack \(formatElapsed(elapsed)) ago")
                     .font(.caption2.monospacedDigit())
