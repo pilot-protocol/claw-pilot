@@ -6,7 +6,7 @@ import PackageDescription
 // ClawChat is shipped as a Swift Package so the wire/connection/view-model
 // layers can be `swift test`-d without an Xcode project. The actual iOS app
 // target lives in ios/ClawChatApp.xcodeproj and depends on this package +
-// the Pilot SwiftPM (from the web4 repo).
+// the Pilot SwiftPM (sibling repo `sdk-swift` in the pilot-protocol org).
 
 let package = Package(
     name: "ClawChat",
@@ -18,16 +18,15 @@ let package = Package(
         .library(name: "ClawChat", targets: ["ClawChat"]),
     ],
     dependencies: [
-        // Pilot SDK comes from the web4 monorepo sibling. When you embed
-        // this package into an Xcode project, set the local path to your
-        // actual Development/web4/sdk/swift checkout.
-        .package(path: "../../../web4/sdk/swift"),
+        // Pilot SwiftPM lives at `pilot-protocol/sdk-swift` (sibling repo).
+        // Override locally if your checkout is elsewhere.
+        .package(path: "../../../sdk-swift"),
     ],
     targets: [
         .target(
             name: "ClawChat",
             dependencies: [
-                .product(name: "Pilot", package: "swift"),
+                .product(name: "Pilot", package: "sdk-swift"),
             ],
             path: "Sources/ClawChat"
         ),

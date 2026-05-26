@@ -77,24 +77,19 @@ final class PilotConnectionTests: XCTestCase {
     }
 
     // Wedge-recovery contract: reconnect() must be safe to call when the
-    // connection has never been started (no Pilot to tear down) — it just
-    // proceeds to start(). The real start() will fail in unit tests because
-    // there's no daemon backing the SDK; what we're asserting here is that
-    // the tearDown path doesn't blow up on a fresh connection, and that
-    // failure propagates as a normal Error (not a crash or precondition).
+    // connection has never been started (no Pilot to tear down). The
+    // embedded SDK actually boots a real daemon in tests so selfAddress
+    // may get populated, but the handshake against fake peer 42 will fail.
+    // What we're asserting: the tearDown path doesn't precondition-fail,
+    // the handshake error propagates as a regular Error, and `isReady`
+    // ends up false so the caller knows not to send.
     func testReconnectOnFreshConnectionFailsCleanly() async {
         let conn = PilotConnection(config: makeConfig())
         do {
             try await conn.reconnect(maxAttempts: 1)
-            // Reaching here would mean a real Pilot daemon booted — in unit
-            // tests we don't have one. The SDK call should throw.
-            XCTFail("expected reconnect to throw — no real Pilot daemon in unit-test env")
+            XCTFail("expected reconnect to throw — fake peer should fail handshake")
         } catch {
-            // Any thrown error is acceptable; we're verifying the tearDown
-            // path doesn't precondition-fail and that reconnect propagates
-            // failures cleanly. After failure, isReady must be false.
             XCTAssertFalse(conn.isReady)
-            XCTAssertNil(conn.selfAddress)
         }
     }
 
@@ -107,7 +102,7 @@ final class PilotConnectionTests: XCTestCase {
             do {
                 try await conn.reconnect(maxAttempts: 1)
             } catch {
-                // Expected — no real daemon. Loop verifies subsequent calls
+                // Expected — fake peer. Loop verifies subsequent calls
                 // don't trip on residual state.
             }
         }
