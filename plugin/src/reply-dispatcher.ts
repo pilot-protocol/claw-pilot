@@ -12,10 +12,13 @@
 // fall through to the per-account outbox if one is provided, matching
 // outbound.ts behavior.
 
+import { readFile } from "node:fs/promises";
+import { basename, extname } from "node:path";
+
 import type { ResolvedPilotAccount } from "./config.js";
 import type { Outbox } from "./outbox.js";
 import type { Transport } from "./transport.js";
-import { chunkAgentText, encodeEnvelope, newId } from "./wire.js";
+import { chunkAgentText, chunkMedia, encodeEnvelope, newId, type MediaKind } from "./wire.js";
 
 /**
  * Subset of openclaw's ReplyPayload we care about. The full type lives in
@@ -78,69 +81,114 @@ export function buildPilotReplyDispatcher(deps: ReplyDispatcherDeps): ReplyDispa
     }
     queued[kind] += 1;
 
-    if (payload.mediaUrl || (payload.mediaUrls && payload.mediaUrls.length > 0)) {
-      // Media replies via the embedded reply lane are not wired yet — the
-      // OutboundAdapter path handles them for normal channel routing.
-      logger?.warn("pilot reply: media payload ignored (only text supported via embedded reply lane)", {
-        kind,
-        hasMediaUrl: !!payload.mediaUrl,
-        mediaCount: payload.mediaUrls?.length ?? (payload.mediaUrl ? 1 : 0),
-      });
-    }
-
+    const mediaUrls = collectMediaUrls(payload);
     const text = payload.text;
-    if (typeof text !== "string" || text.length === 0) {
-      // Tool results and reasoning blocks frequently have no visible text.
-      // Counted as queued (so openclaw knows we accepted it), no wire work.
+
+    // Nothing visible to send (e.g. tool-progress notice with no text/media).
+    // Counted as queued so openclaw knows we accepted, no wire work.
+    if (mediaUrls.length === 0 && (typeof text !== "string" || text.length === 0)) {
       return true;
     }
 
+    // Text first (when present) — for media replies with a caption, openclaw
+    // typically packages caption in `payload.text` and the file ref in
+    // `mediaUrl`. We send the text as a chat bubble; the caption itself
+    // travels on the first media chunk via `chunkMedia`.
+    if (typeof text === "string" && text.length > 0 && mediaUrls.length === 0) {
+      const textPromise = sendTextEnvelopes(text, kind);
+      pending.push(textPromise.catch(() => undefined));
+    }
+
+    // Media — load each url, chunk, send.
+    for (const url of mediaUrls) {
+      const mediaPromise = sendOneMedia(url, payload.text, kind);
+      pending.push(mediaPromise.catch(() => undefined));
+    }
+
+    return true;
+  }
+
+  async function sendTextEnvelopes(text: string, kind: ReplyDispatchKind): Promise<void> {
     const envelopes = chunkAgentText(text, newId());
     const encoded: Buffer[] = envelopes.map((env) => encodeEnvelope(env));
+    await sendChunks({ encoded, envelopes, kind });
+  }
 
-    const sendAll = (async () => {
-      for (let i = 0; i < encoded.length; i++) {
-        try {
-          await transport.send(peerAddr, account.appPort, encoded[i]!);
-        } catch (e) {
-          // Match outbound.ts: enqueue ALL chunks so the receiver's
-          // reassembler doesn't see partial state after a stale TTL.
-          if (outbox) {
-            for (let j = 0; j < envelopes.length; j++) {
-              outbox.enqueue(peerAddr, {
-                id: envelopes[j]!.id,
-                seq: envelopes[j]!.seq,
-                port: account.appPort,
-                dataB64: encoded[j]!.toString("base64"),
-              });
-            }
-            logger?.info("pilot reply: send failed, message queued in outbox", {
-              kind,
-              peer: peerAddr,
-              messageId: envelopes[0]!.id,
-              chunks: envelopes.length,
-              failedAt: i,
-              err: e instanceof Error ? e.message : String(e),
+  async function sendOneMedia(
+    url: string,
+    caption: string | undefined,
+    kind: ReplyDispatchKind,
+  ): Promise<void> {
+    let bytes: Buffer;
+    try {
+      bytes = await loadMediaBytes(url);
+    } catch (e) {
+      failed[kind] += 1;
+      logger?.warn?.("pilot reply: media load failed", {
+        kind,
+        url,
+        err: e instanceof Error ? e.message : String(e),
+      });
+      return;
+    }
+    const filename = pathFilenameFromUrl(url);
+    const mime = inferMimeFromFilename(filename);
+    const media = classifyMediaFromMime(mime);
+    const envelopes = chunkMedia({
+      from: "agent",
+      media,
+      bytes,
+      filename,
+      mime,
+      caption: caption && caption.length > 0 ? caption : undefined,
+      id: newId(),
+    });
+    const encoded: Buffer[] = envelopes.map((env) => encodeEnvelope(env));
+    await sendChunks({ encoded, envelopes, kind });
+  }
+
+  async function sendChunks(params: {
+    encoded: Buffer[];
+    envelopes: Array<{ id: string; seq?: number }>;
+    kind: ReplyDispatchKind;
+  }): Promise<void> {
+    const { encoded, envelopes, kind } = params;
+    for (let i = 0; i < encoded.length; i++) {
+      try {
+        await transport.send(peerAddr, account.appPort, encoded[i]!);
+      } catch (e) {
+        // Match outbound.ts: enqueue ALL chunks so the receiver's
+        // reassembler doesn't see partial state after a stale TTL.
+        if (outbox) {
+          for (let j = 0; j < envelopes.length; j++) {
+            outbox.enqueue(peerAddr, {
+              id: envelopes[j]!.id,
+              seq: envelopes[j]!.seq,
+              port: account.appPort,
+              dataB64: encoded[j]!.toString("base64"),
             });
-            return;
           }
-          failed[kind] += 1;
-          logger?.warn?.("pilot reply: send failed (no outbox)", {
+          logger?.info("pilot reply: send failed, message queued in outbox", {
             kind,
             peer: peerAddr,
             messageId: envelopes[0]!.id,
+            chunks: envelopes.length,
             failedAt: i,
             err: e instanceof Error ? e.message : String(e),
           });
           return;
         }
+        failed[kind] += 1;
+        logger?.warn?.("pilot reply: send failed (no outbox)", {
+          kind,
+          peer: peerAddr,
+          messageId: envelopes[0]!.id,
+          failedAt: i,
+          err: e instanceof Error ? e.message : String(e),
+        });
+        return;
       }
-    })();
-
-    // Swallow rejections so an unhandled-rejection doesn't take down the
-    // event loop — the failure path above already accounts for them.
-    pending.push(sendAll.catch(() => undefined));
-    return true;
+    }
   }
 
   return {
@@ -156,4 +204,58 @@ export function buildPilotReplyDispatcher(deps: ReplyDispatcherDeps): ReplyDispa
       complete = true;
     },
   };
+}
+
+/** Merge the two media-url shapes openclaw can hand us into one ordered list. */
+function collectMediaUrls(payload: ReplyDispatcherPayload): string[] {
+  const out: string[] = [];
+  if (payload.mediaUrl) out.push(payload.mediaUrl);
+  if (payload.mediaUrls && payload.mediaUrls.length > 0) {
+    for (const u of payload.mediaUrls) {
+      if (u && !out.includes(u)) out.push(u);
+    }
+  }
+  return out;
+}
+
+/**
+ * Read media bytes from a url the agent produced. Accepts `file://` URLs and
+ * raw absolute paths — the embedded reply lane runs in-process with the
+ * agent, so anything the agent could write the dispatcher can read. No
+ * trust-roots check here (unlike outbound.ts) because the agent is already
+ * trusted: the alternative is silently dropping its replies.
+ */
+async function loadMediaBytes(url: string): Promise<Buffer> {
+  const path = url.startsWith("file://") ? url.slice("file://".length) : url;
+  return readFile(path);
+}
+
+function pathFilenameFromUrl(url: string): string {
+  if (url.startsWith("file://")) return basename(url.slice("file://".length));
+  return basename(url);
+}
+
+function inferMimeFromFilename(filename: string): string {
+  const ext = extname(filename).toLowerCase();
+  switch (ext) {
+    case ".png": return "image/png";
+    case ".jpg":
+    case ".jpeg": return "image/jpeg";
+    case ".gif": return "image/gif";
+    case ".webp": return "image/webp";
+    case ".heic": return "image/heic";
+    case ".mp3": return "audio/mpeg";
+    case ".m4a": return "audio/mp4";
+    case ".wav": return "audio/wav";
+    case ".pdf": return "application/pdf";
+    case ".txt": return "text/plain";
+    case ".json": return "application/json";
+    default: return "application/octet-stream";
+  }
+}
+
+function classifyMediaFromMime(mime: string): MediaKind {
+  if (mime.startsWith("image/")) return "image";
+  if (mime.startsWith("audio/")) return "audio";
+  return "file";
 }

@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
@@ -114,22 +114,90 @@ describe("buildPilotReplyDispatcher", () => {
     expect(transport.sent).toHaveLength(0);
   });
 
-  it("media-only payload is rejected with a warn (channel-side gap, not a crash)", async () => {
+  it("a `mediaUrl` payload loads the file, chunks via chunkMedia, and sends each chunk to the peer", async () => {
     const transport = new CapturingTransport();
-    const logger = silentLogger();
+    const pngPath = join(workDir, "img.png");
+    // Make the payload big enough to force at least one chunk split.
+    writeFileSync(pngPath, Buffer.alloc(4_096, 0xff));
     const d = buildPilotReplyDispatcher({
       account: makeAccount(),
       peerAddr: PEER,
       transport,
-      logger,
+      logger: silentLogger(),
     });
-    expect(d.sendFinalReply({ mediaUrl: "file:///tmp/x.png" })).toBe(true);
+    expect(d.sendFinalReply({ mediaUrl: `file://${pngPath}` })).toBe(true);
+    await d.waitForIdle();
+    expect(transport.sent.length).toBeGreaterThanOrEqual(1);
+    const decoded = transport.sent.map((s) => decodeEnvelope(s.data));
+    for (const env of decoded) {
+      expect(env.kind).toBe("media");
+      if (env.kind === "media") {
+        expect(env.media).toBe("image");
+        expect(env.from).toBe("agent");
+      }
+    }
+  });
+
+  it("a media payload with caption text sends the caption on the first media chunk (no separate text envelope)", async () => {
+    const transport = new CapturingTransport();
+    const pngPath = join(workDir, "with-caption.png");
+    writeFileSync(pngPath, Buffer.from([0x89, 0x50, 0x4e, 0x47]));
+    const d = buildPilotReplyDispatcher({
+      account: makeAccount(),
+      peerAddr: PEER,
+      transport,
+      logger: silentLogger(),
+    });
+    d.sendFinalReply({ text: "here's the diagram", mediaUrl: `file://${pngPath}` });
+    await d.waitForIdle();
+    const decoded = transport.sent.map((s) => decodeEnvelope(s.data));
+    expect(decoded.every((e) => e.kind === "media")).toBe(true);
+    const first = decoded[0]!;
+    if (first.kind === "media") {
+      expect(first.caption).toBe("here's the diagram");
+    }
+  });
+
+  it("loading a non-existent media file marks the kind failed (counted, not silently dropped)", async () => {
+    const transport = new CapturingTransport();
+    const d = buildPilotReplyDispatcher({
+      account: makeAccount(),
+      peerAddr: PEER,
+      transport,
+      logger: silentLogger(),
+    });
+    d.sendFinalReply({ mediaUrl: `file://${join(workDir, "does-not-exist.png")}` });
     await d.waitForIdle();
     expect(transport.sent).toHaveLength(0);
-    expect(logger.warn).toHaveBeenCalledWith(
-      expect.stringContaining("media payload ignored"),
-      expect.any(Object),
-    );
+    expect(d.getFailedCounts().final).toBeGreaterThanOrEqual(1);
+  });
+
+  it("multiple urls in mediaUrls send each, deduped against mediaUrl", async () => {
+    const transport = new CapturingTransport();
+    const a = join(workDir, "a.png");
+    const b = join(workDir, "b.png");
+    writeFileSync(a, Buffer.alloc(64, 0x11));
+    writeFileSync(b, Buffer.alloc(64, 0x22));
+    const d = buildPilotReplyDispatcher({
+      account: makeAccount(),
+      peerAddr: PEER,
+      transport,
+      logger: silentLogger(),
+    });
+    d.sendFinalReply({
+      mediaUrl: `file://${a}`,
+      mediaUrls: [`file://${a}`, `file://${b}`], // a is duplicated; should appear once
+    });
+    await d.waitForIdle();
+    // Each file is small enough to fit in one media envelope (the bytes are
+    // base64'd, ~88 bytes each, plus metadata — still under MAX_ENVELOPE_BYTES
+    // for the first chunk + bytes split if needed). Should be 2 distinct ids.
+    const ids = new Set<string>();
+    for (const s of transport.sent) {
+      const env = decodeEnvelope(s.data);
+      if (env.kind === "media") ids.add(env.id);
+    }
+    expect(ids.size).toBe(2);
   });
 
   it("on send failure with an outbox, enqueues every chunk for retry and counts as queued (not failed)", async () => {
