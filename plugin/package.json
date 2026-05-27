@@ -16,7 +16,7 @@
     "clean": "rm -rf dist/"
   },
   "dependencies": {
-    "pilotprotocol": "file:../../web4/sdk/node"
+    "pilotprotocol": "^1.10.2"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",

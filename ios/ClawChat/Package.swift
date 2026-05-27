@@ -18,9 +18,12 @@ let package = Package(
         .library(name: "ClawChat", targets: ["ClawChat"]),
     ],
     dependencies: [
-        // Pilot SwiftPM lives at `pilot-protocol/sdk-swift` (sibling repo).
-        // Override locally if your checkout is elsewhere.
-        .package(path: "../../../sdk-swift"),
+        // Pilot SwiftPM is published with URL-based binary distribution at
+        // pilot-protocol/sdk-swift v0.2.0+. SwiftPM downloads + checksums
+        // the xcframework — no local clone or manual build step required.
+        // For dev iteration on the SDK itself, point this at a local path
+        // with `.package(path: "../../../sdk-swift")` and `swift package edit`.
+        .package(url: "https://github.com/pilot-protocol/sdk-swift.git", from: "0.2.0"),
     ],
     targets: [
         .target(
