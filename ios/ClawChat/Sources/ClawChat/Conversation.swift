@@ -169,10 +169,15 @@ public final class Conversation: ObservableObject {
                 self.statusMessage = "ready as \(conn.selfAddress ?? "?")"
                 // Drain anything that was queued while we were disconnected.
                 self.drainOutbox()
-                // On iOS, auto-recover from the UDP-socket close that happens
-                // when the app is suspended. No-op on macOS.
-                self.observeAppForeground()
-                // Background watchdog: catches mid-session wedges.
+                // NOTE: observeAppForeground() is no longer called here. The
+                // host's scenePhase handler (ContentView) covers the same case
+                // by calling disconnect()/ensureConnected() across .background
+                // → .active transitions. Having BOTH installed produced a
+                // refresh storm — each rapid .inactive↔.active flicker fired
+                // refresh() AND ensureConnected(), each handshake spawning a
+                // new tunnel (13 tunnels/2s in one production trace). The
+                // observer remains public API for callers that don't manage
+                // scenePhase themselves.
                 self.startWatchdog()
             } catch {
                 self?.state = .error(String(describing: error))
@@ -198,7 +203,7 @@ public final class Conversation: ObservableObject {
                 _ = try await conn.send(text: text, messageId: messageId)
                 self?.updateDelivery(id: messageId, to: .sent)
             } catch {
-                self?.updateDelivery(id: messageId, to: .failed(String(describing: error)))
+                self?.updateDelivery(id: messageId, to: deliveryStateForSendError(error))
             }
         }
     }
@@ -230,7 +235,7 @@ public final class Conversation: ObservableObject {
                     _ = try await conn.send(text: m.text, messageId: m.id)
                     self?.updateDelivery(id: m.id, to: .sent)
                 } catch {
-                    self?.updateDelivery(id: m.id, to: .failed(String(describing: error)))
+                    self?.updateDelivery(id: m.id, to: deliveryStateForSendError(error))
                 }
             }
         }
@@ -317,7 +322,7 @@ public final class Conversation: ObservableObject {
                 )
                 self?.updateDelivery(id: messageId, to: .sent)
             } catch {
-                self?.updateDelivery(id: messageId, to: .failed(String(describing: error)))
+                self?.updateDelivery(id: messageId, to: deliveryStateForSendError(error))
             }
         }
     }
@@ -351,7 +356,7 @@ public final class Conversation: ObservableObject {
                 _ = try await conn.send(text: "claw-chat-ping", messageId: id)
                 self?.updateDelivery(id: id, to: .sent)
             } catch {
-                self?.updateDelivery(id: id, to: .failed(String(describing: error)))
+                self?.updateDelivery(id: id, to: deliveryStateForSendError(error))
             }
         }
     }
@@ -519,4 +524,26 @@ public final class Conversation: ObservableObject {
 private func elapsedString(_ start: Date) -> String {
     let dt = Date().timeIntervalSince(start)
     return String(format: "%.1fs", dt)
+}
+
+/// Classify a send-path error into a delivery state. A `.notStarted` throw
+/// means the daemon was torn down between our `conn.isReady` gate and the
+/// `conn.send()` call — typical with the scenePhase disconnect-on-background
+/// race. We DON'T want to surface those as `.failed` (which would leave the
+/// bubble looking permanently broken even though the user did nothing wrong);
+/// instead keep them in `.sending` so `drainOutbox()` picks them up the
+/// moment we reconnect. Other errors (encode failure, real send failure
+/// after a successful connect) get surfaced as failures so the user knows
+/// something actually went wrong.
+private func deliveryStateForSendError(_ error: Error) -> ChatDeliveryState {
+    if let connErr = error as? ConnectionError {
+        switch connErr {
+        case .notStarted:
+            // Daemon was down at the moment of send — outbox will retry.
+            return .sending
+        case .handshakeFailed, .trustTimeout, .sendFailed, .encodeFailed:
+            return .failed(String(describing: connErr))
+        }
+    }
+    return .failed(String(describing: error))
 }

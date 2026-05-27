@@ -161,4 +161,20 @@ final class ConversationTests: XCTestCase {
         // No connection to reset; state stays idle and the call is a no-op.
         XCTAssertEqual(c.state, .idle)
     }
+
+    // Regression: send-during-teardown-race must NOT show as .failed.
+    // When the scenePhase disconnect runs between our isReady check and
+    // the conn.send() call, the send throws .notStarted. Marking the
+    // bubble .failed would leave it looking broken when the user did
+    // nothing wrong; instead leave it .sending so drainOutbox retries.
+    func testSendWhileNotReadyStaysSendingNotFailed() {
+        let c = Conversation()
+        c.draft = "race"
+        c.send()
+        // No connection means conn.isReady gate fails, message appended
+        // as .sending and the Task path is skipped entirely. The bubble
+        // must NOT have flipped to .failed.
+        XCTAssertEqual(c.messages.count, 1)
+        XCTAssertEqual(c.messages.first?.delivery, .sending)
+    }
 }
