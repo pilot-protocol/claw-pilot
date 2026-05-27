@@ -84,6 +84,16 @@ export class PeerAddressCache {
   }
 
   /**
+   * Has this node_id ever been recorded? Lets callers distinguish "seen
+   * inbound and trustworthy" from "we'd be guessing the network." The
+   * resolver uses this to reject targets the agent can't possibly be
+   * referring to legitimately.
+   */
+  has(nodeId: number): boolean {
+    return this.networkByNodeId.has(nodeId);
+  }
+
+  /**
    * Resolve a `to` value that might be either an address or a bare node_id.
    * Returns:
    *   - the input unchanged if it's already an address

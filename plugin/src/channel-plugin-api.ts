@@ -12,6 +12,7 @@ import { DEFAULT_ACCOUNT_ID } from "./config.js";
 import { PilotLifecycle } from "./lifecycle.js";
 import { buildPilotDirectory } from "./directory.js";
 import { buildPilotOutbound } from "./outbound.js";
+import { buildPilotResolver } from "./resolver.js";
 import { buildPilotStatus } from "./status.js";
 import type { InboundLogger } from "./inbound.js";
 
@@ -104,6 +105,14 @@ export function buildPilotChannelPlugin(deps: BuildPilotPluginDeps): PilotChanne
       resolvePeerCache: (accountId) =>
         lifecycle.getAccount(accountId ?? DEFAULT_ACCOUNT_ID)?.peerAddressCache,
       logger: deps.logger,
+    }),
+    // Target resolver. openclaw's `message.send` agent tool calls this
+    // before routing: any input that isn't `resolved: true` gets rejected
+    // with "Unknown target", which is exactly what the agent was hitting
+    // before this was registered.
+    resolver: buildPilotResolver({
+      resolvePeerCache: (accountId) =>
+        lifecycle.getAccount(accountId ?? DEFAULT_ACCOUNT_ID)?.peerAddressCache,
     }),
     directory: buildPilotDirectory({ resolveAccount }),
     status: buildPilotStatus({
