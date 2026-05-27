@@ -196,6 +196,7 @@ async function sendOrEnqueue(params: {
     chunks: envelopes.length,
   });
   for (let i = 0; i < envelopes.length; i++) {
+    await throttleIfNeeded(i, envelopes.length);
     try {
       await transport.send(peerAddr, appPort, encoded[i]!);
     } catch (e) {
@@ -221,28 +222,25 @@ async function sendOrEnqueue(params: {
       return { ok: true, messageId: envelopes[0]!.id, queued: true } as OutboundDeliveryResult;
     }
   }
-  // Redundancy pass — for multi-chunk messages (media), each datagram
-  // travels independently over the relay and any single one going missing
-  // strands the entire reassembly. Sending each chunk twice with a small
-  // gap reduces the complete-message loss rate from p to ~p²: at 0.5%
-  // per-chunk loss + 1 retry, full-image arrival goes from ~96% (626
-  // chunks × 99.5%) to ~99.998%. The iOS reassembler is keyed by
-  // (id, seq) so duplicates are silently deduplicated. Single-chunk text
-  // messages skip the second pass — no upside.
-  if (envelopes.length > 1) {
-    await new Promise((r) => setTimeout(r, 50));
-    for (let i = 0; i < envelopes.length; i++) {
-      try {
-        await transport.send(peerAddr, appPort, encoded[i]!);
-      } catch {
-        // Retry pass is best-effort. The primary pass already succeeded;
-        // if the relay starts dropping now, the iOS reassembler still has
-        // the originals.
-        break;
-      }
-    }
-  }
   return { ok: true, messageId: envelopes[0]!.id } as OutboundDeliveryResult;
+}
+
+/**
+ * Small inter-chunk delay applied to multi-chunk outbound after the first
+ * burst window. The iOS daemon's UDP recv socket has a ~256KB kernel buffer
+ * (default for SO_RCVBUF on iOS); at ~1KB per encoded chunk, only ~256
+ * can sit waiting before the kernel silently drops the rest. The recv
+ * worker drains much slower than we can pump (relay path adds latency to
+ * the drain). Burst the first N chunks at full speed for small media, then
+ * slow down so the receiver can keep up.
+ */
+const BURST_WINDOW = 50;
+const POST_BURST_DELAY_MS = 5;
+
+async function throttleIfNeeded(chunkIndex: number, totalChunks: number): Promise<void> {
+  if (totalChunks <= BURST_WINDOW) return;
+  if (chunkIndex < BURST_WINDOW) return;
+  await new Promise((r) => setTimeout(r, POST_BURST_DELAY_MS));
 }
 
 async function loadMedia(

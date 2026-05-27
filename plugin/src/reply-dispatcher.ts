@@ -174,7 +174,15 @@ export function buildPilotReplyDispatcher(deps: ReplyDispatcherDeps): ReplyDispa
     kind: ReplyDispatchKind;
   }): Promise<void> {
     const { encoded, envelopes, kind } = params;
+    // Burst the first 50 chunks at full speed (small media still snappy),
+    // then 5ms between chunks so the iOS daemon's UDP recv buffer has
+    // time to drain. See outbound.ts BURST_WINDOW for the math.
+    const BURST_WINDOW = 50;
+    const POST_BURST_DELAY_MS = 5;
     for (let i = 0; i < encoded.length; i++) {
+      if (envelopes.length > BURST_WINDOW && i >= BURST_WINDOW) {
+        await new Promise((r) => setTimeout(r, POST_BURST_DELAY_MS));
+      }
       try {
         await transport.send(peerAddr, account.appPort, encoded[i]!);
       } catch (e) {
@@ -208,22 +216,6 @@ export function buildPilotReplyDispatcher(deps: ReplyDispatcherDeps): ReplyDispa
           err: e instanceof Error ? e.message : String(e),
         });
         return;
-      }
-    }
-    // Redundancy pass for multi-chunk messages — see outbound.ts
-    // sendOrEnqueue for the math. iOS reassembler dedupes on (id, seq),
-    // single-chunk text replies don't bother re-sending.
-    if (envelopes.length > 1) {
-      await new Promise((r) => setTimeout(r, 50));
-      for (let i = 0; i < encoded.length; i++) {
-        try {
-          await transport.send(peerAddr, account.appPort, encoded[i]!);
-        } catch {
-          // Best-effort retry. Primary pass already succeeded; if the
-          // relay starts dropping during the second pass, the iOS
-          // reassembler still has the originals.
-          break;
-        }
       }
     }
   }

@@ -177,10 +177,11 @@ describe("buildPilotOutbound", () => {
     expect(transport.sent[0]!.peerAddr).toBe("7:0000.0003.3B23");
   });
 
-  // Redundancy pass: multi-chunk messages send each chunk twice to absorb
-  // per-datagram UDP loss over the relay. Single-chunk messages do not —
-  // the second pass is pure waste for them.
-  it("sends each chunk TWICE for a multi-chunk message", async () => {
+  // Each chunk is sent exactly once — the previous redundancy pass that
+  // doubled every chunk was rolled back because it didn't improve
+  // delivery (chunks were still being lost) and doubled the kernel
+  // recv-buffer pressure on iOS, making the overflow worse.
+  it("sends each chunk exactly once for a multi-chunk message", async () => {
     const transport = new FakeTransport();
     const account = resolveAccount({ allowlist: [ALICE_ADDR] });
     const out = buildPilotOutbound({
@@ -189,8 +190,6 @@ describe("buildPilotOutbound", () => {
     });
     const long = "A".repeat(3_500); // forces ≥2 chunks
     await out.sendText!(ctxFor(ALICE_ADDR, long));
-    // Each unique envelope id should appear at least twice in transport.sent
-    // (once per pass).
     const counts = new Map<string, number>();
     for (const s of transport.sent) {
       const env = decodeEnvelope(s.data);
@@ -201,20 +200,7 @@ describe("buildPilotOutbound", () => {
     }
     expect(counts.size).toBeGreaterThan(1); // multi-chunk
     for (const [_key, count] of counts) {
-      expect(count).toBe(2);
+      expect(count).toBe(1);
     }
-  });
-
-  // Single-chunk text messages must NOT pay the 50ms redundancy delay —
-  // chat-style "hi" sends should be as snappy as possible.
-  it("does NOT double-send a single-chunk message", async () => {
-    const transport = new FakeTransport();
-    const account = resolveAccount({ allowlist: [ALICE_ADDR] });
-    const out = buildPilotOutbound({
-      resolveAccount: () => account,
-      resolveTransport: () => transport,
-    });
-    await out.sendText!(ctxFor(ALICE_ADDR, "hi"));
-    expect(transport.sent).toHaveLength(1);
   });
 });
