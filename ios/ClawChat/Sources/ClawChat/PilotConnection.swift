@@ -86,6 +86,19 @@ public struct IncomingError: Equatable, Sendable {
     public let text: String
 }
 
+/// How packets to the claw are currently being routed on the overlay.
+/// `direct` = NAT-traversed peer-to-peer, low latency, no third party in
+/// the path. `relayed` = forwarded through the rendezvous server (or
+/// another relay) because direct didn't work — adds latency and, on
+/// shared NATs, adds a hairpinning hop that can drop sustained bursts.
+/// `unknown` = we haven't queried yet, or the daemon doesn't know about
+/// the peer.
+public enum PeerConnectionMode: Equatable, Sendable {
+    case direct(endpoint: String)
+    case relayed(endpoint: String)
+    case unknown
+}
+
 /// Thin wrapper that boots Pilot, handshakes the claw, and provides a
 /// streaming message API. Single-conversation MVP — one claw peer.
 public final class PilotConnection {
@@ -438,6 +451,36 @@ public final class PilotConnection {
         } catch {
             throw ConnectionError.sendFailed(String(describing: error))
         }
+    }
+
+    /// Query the daemon for the current routing mode to our configured
+    /// claw peer. Cheap (local IPC); safe to call on each watchdog tick.
+    /// Returns `.unknown` if the daemon doesn't list the peer or info()
+    /// throws — we never surface stale state.
+    public func currentPeerMode() -> PeerConnectionMode {
+        guard let p = pilot else { return .unknown }
+        let info: [String: Any]
+        do {
+            info = try p.info()
+        } catch {
+            return .unknown
+        }
+        guard let peers = info["peer_list"] as? [[String: Any]] else { return .unknown }
+        let target = cfg.claw.nodeId
+        for peer in peers {
+            // The FFI JSON renders ids as Int (or NSNumber); coerce
+            // defensively rather than assuming UInt32.
+            let nid: UInt32?
+            if let n = peer["node_id"] as? Int { nid = UInt32(exactly: n) }
+            else if let n = peer["node_id"] as? UInt32 { nid = n }
+            else if let n = peer["node_id"] as? NSNumber { nid = UInt32(exactly: n.intValue) }
+            else { nid = nil }
+            guard nid == target else { continue }
+            let isRelay = (peer["relay"] as? Bool) ?? false
+            let endpoint = (peer["endpoint"] as? String) ?? "?"
+            return isRelay ? .relayed(endpoint: endpoint) : .direct(endpoint: endpoint)
+        }
+        return .unknown
     }
 
     public func stop() {

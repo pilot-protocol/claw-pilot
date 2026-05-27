@@ -90,6 +90,12 @@ public final class Conversation: ObservableObject {
     /// Wall-clock time the most recent ack landed. Lets the UI render
     /// "last activity Xs ago" without scanning the whole message log.
     @Published public private(set) var lastAckAt: Date?
+    /// How the daemon is currently routing to the claw — direct or via a
+    /// relay (almost always the rendezvous server). Surface this so the
+    /// user understands why media might be slow / dropping: hairpinning
+    /// through a shared NAT in `.relayed` mode is the most common cause
+    /// of multi-chunk loss.
+    @Published public private(set) var peerMode: PeerConnectionMode = .unknown
 
     public private(set) var connection: PilotConnection?
     private var listenerTask: Task<Void, Never>?
@@ -167,6 +173,7 @@ public final class Conversation: ObservableObject {
                 guard let self else { return }
                 self.state = .ready(selfAddress: conn.selfAddress ?? "?")
                 self.statusMessage = "ready as \(conn.selfAddress ?? "?")"
+                self.peerMode = conn.currentPeerMode()
                 // Drain anything that was queued while we were disconnected.
                 self.drainOutbox()
                 // NOTE: observeAppForeground() is no longer called here. The
@@ -456,6 +463,11 @@ public final class Conversation: ObservableObject {
     /// watchdog task call this on its interval.
     public func runWatchdogCheck() {
         guard let conn = connection, conn.isReady else { return }
+        // Refresh the peer routing mode so the UI shows current state
+        // even when there's no other activity. Cheap (local IPC) so the
+        // watchdog cadence is fine.
+        peerMode = conn.currentPeerMode()
+
         let now = Date()
         let threshold = watchdogStuckThresholdSeconds
         let stuck = messages.filter { msg in

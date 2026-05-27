@@ -108,6 +108,14 @@ final class PilotConnectionTests: XCTestCase {
         }
     }
 
+    // currentPeerMode() on a never-started connection has no daemon to
+    // query — must return .unknown, not crash. The header's
+    // peerRoutingLine relies on this behavior to hide itself pre-connect.
+    func testCurrentPeerModeReturnsUnknownBeforeStart() {
+        let conn = PilotConnection(config: makeConfig())
+        XCTAssertEqual(conn.currentPeerMode(), .unknown)
+    }
+
     // Calling reconnect() twice in a row must not crash even when the first
     // attempt left no Pilot instance behind. Defensive against the "user
     // hammers the Reconnect button" UX.

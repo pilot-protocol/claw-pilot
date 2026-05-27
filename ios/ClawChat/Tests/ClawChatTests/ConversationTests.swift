@@ -162,6 +162,15 @@ final class ConversationTests: XCTestCase {
         XCTAssertEqual(c.state, .idle)
     }
 
+    // peerMode starts unknown so the header UI hides the routing-mode
+    // line until we've actually queried info() — avoids a misleading
+    // "direct" or "relayed" flash on first launch before the daemon is
+    // up.
+    func testInitialPeerModeIsUnknown() {
+        let c = Conversation()
+        XCTAssertEqual(c.peerMode, .unknown)
+    }
+
     // Regression: send-during-teardown-race must NOT show as .failed.
     // When the scenePhase disconnect runs between our isReady check and
     // the conn.send() call, the send throws .notStarted. Marking the

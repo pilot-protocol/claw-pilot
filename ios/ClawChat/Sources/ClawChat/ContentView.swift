@@ -172,6 +172,7 @@ public struct ClawChatView: View {
                 Text(clawConfig.claw.address)
                     .font(.caption2.monospaced())
                     .foregroundStyle(.secondary)
+                peerRoutingLine
                 lastActivityLine
             }
             Spacer()
@@ -229,6 +230,29 @@ public struct ClawChatView: View {
         case .connecting:  return .yellow
         case .ready:       return .green
         case .error:       return .red
+        }
+    }
+
+    /// One-line indicator of how the daemon is currently routing to the
+    /// claw — direct or via a relay endpoint. Hairpinning through a shared
+    /// NAT in `.relayed` mode is the most common cause of multi-chunk loss
+    /// (the user discovered this by switching wifi → cellular), so surfacing
+    /// it lets the user understand why media transfers might be flaky.
+    @ViewBuilder
+    private var peerRoutingLine: some View {
+        switch convo.peerMode {
+        case .direct(let ep):
+            Label("direct · \(ep)", systemImage: "bolt.fill")
+                .font(.caption2.monospacedDigit())
+                .foregroundStyle(.green)
+                .lineLimit(1)
+        case .relayed(let ep):
+            Label("via relay · \(ep)", systemImage: "arrow.triangle.2.circlepath")
+                .font(.caption2.monospacedDigit())
+                .foregroundStyle(.orange)
+                .lineLimit(1)
+        case .unknown:
+            EmptyView()
         }
     }
 
