@@ -210,6 +210,22 @@ export function buildPilotReplyDispatcher(deps: ReplyDispatcherDeps): ReplyDispa
         return;
       }
     }
+    // Redundancy pass for multi-chunk messages — see outbound.ts
+    // sendOrEnqueue for the math. iOS reassembler dedupes on (id, seq),
+    // single-chunk text replies don't bother re-sending.
+    if (envelopes.length > 1) {
+      await new Promise((r) => setTimeout(r, 50));
+      for (let i = 0; i < encoded.length; i++) {
+        try {
+          await transport.send(peerAddr, account.appPort, encoded[i]!);
+        } catch {
+          // Best-effort retry. Primary pass already succeeded; if the
+          // relay starts dropping during the second pass, the iOS
+          // reassembler still has the originals.
+          break;
+        }
+      }
+    }
   }
 
   return {

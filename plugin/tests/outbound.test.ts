@@ -81,12 +81,17 @@ describe("buildPilotOutbound", () => {
       expect(s.data.length).toBeLessThanOrEqual(MAX_ENVELOPE_BYTES);
     }
 
-    // Concatenating chunks yields the original text.
-    const reassembled = transport.sent
-      .map((s) => decodeEnvelope(s.data))
-      .filter((e) => e.kind === "agent")
-      .sort((a, b) => (a.seq ?? 0) - (b.seq ?? 0))
-      .map((e) => (e.kind === "agent" ? e.text : ""))
+    // Concatenating chunks yields the original text. Dedupe by seq first
+    // — the redundancy pass sends each chunk twice for multi-chunk
+    // messages (UDP-loss mitigation over the relay).
+    const bySeq = new Map<number, string>();
+    for (const s of transport.sent) {
+      const env = decodeEnvelope(s.data);
+      if (env.kind === "agent") bySeq.set(env.seq ?? 0, env.text);
+    }
+    const reassembled = Array.from(bySeq.entries())
+      .sort(([a], [b]) => a - b)
+      .map(([, t]) => t)
       .join("");
     expect(reassembled).toBe(long);
   });
@@ -170,5 +175,46 @@ describe("buildPilotOutbound", () => {
     });
     await out.sendText!(ctxFor("211747"));
     expect(transport.sent[0]!.peerAddr).toBe("7:0000.0003.3B23");
+  });
+
+  // Redundancy pass: multi-chunk messages send each chunk twice to absorb
+  // per-datagram UDP loss over the relay. Single-chunk messages do not —
+  // the second pass is pure waste for them.
+  it("sends each chunk TWICE for a multi-chunk message", async () => {
+    const transport = new FakeTransport();
+    const account = resolveAccount({ allowlist: [ALICE_ADDR] });
+    const out = buildPilotOutbound({
+      resolveAccount: () => account,
+      resolveTransport: () => transport,
+    });
+    const long = "A".repeat(3_500); // forces ≥2 chunks
+    await out.sendText!(ctxFor(ALICE_ADDR, long));
+    // Each unique envelope id should appear at least twice in transport.sent
+    // (once per pass).
+    const counts = new Map<string, number>();
+    for (const s of transport.sent) {
+      const env = decodeEnvelope(s.data);
+      if (env.kind === "agent") {
+        const key = `${env.id}:${env.seq ?? 0}`;
+        counts.set(key, (counts.get(key) ?? 0) + 1);
+      }
+    }
+    expect(counts.size).toBeGreaterThan(1); // multi-chunk
+    for (const [_key, count] of counts) {
+      expect(count).toBe(2);
+    }
+  });
+
+  // Single-chunk text messages must NOT pay the 50ms redundancy delay —
+  // chat-style "hi" sends should be as snappy as possible.
+  it("does NOT double-send a single-chunk message", async () => {
+    const transport = new FakeTransport();
+    const account = resolveAccount({ allowlist: [ALICE_ADDR] });
+    const out = buildPilotOutbound({
+      resolveAccount: () => account,
+      resolveTransport: () => transport,
+    });
+    await out.sendText!(ctxFor(ALICE_ADDR, "hi"));
+    expect(transport.sent).toHaveLength(1);
   });
 });

@@ -221,6 +221,27 @@ async function sendOrEnqueue(params: {
       return { ok: true, messageId: envelopes[0]!.id, queued: true } as OutboundDeliveryResult;
     }
   }
+  // Redundancy pass — for multi-chunk messages (media), each datagram
+  // travels independently over the relay and any single one going missing
+  // strands the entire reassembly. Sending each chunk twice with a small
+  // gap reduces the complete-message loss rate from p to ~p²: at 0.5%
+  // per-chunk loss + 1 retry, full-image arrival goes from ~96% (626
+  // chunks × 99.5%) to ~99.998%. The iOS reassembler is keyed by
+  // (id, seq) so duplicates are silently deduplicated. Single-chunk text
+  // messages skip the second pass — no upside.
+  if (envelopes.length > 1) {
+    await new Promise((r) => setTimeout(r, 50));
+    for (let i = 0; i < envelopes.length; i++) {
+      try {
+        await transport.send(peerAddr, appPort, encoded[i]!);
+      } catch {
+        // Retry pass is best-effort. The primary pass already succeeded;
+        // if the relay starts dropping now, the iOS reassembler still has
+        // the originals.
+        break;
+      }
+    }
+  }
   return { ok: true, messageId: envelopes[0]!.id } as OutboundDeliveryResult;
 }
 
