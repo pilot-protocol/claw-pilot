@@ -13,6 +13,14 @@ public struct ClawChatView: View {
     /// Transient toast text that appears when the user taps an inline pilot
     /// address (handled by handlePeerLink). Auto-clears after a short delay.
     @State private var peerLinkToast: String?
+    /// Non-nil while a QuickLook preview sheet is open. Set by tapping any
+    /// non-pkpass attachment; the sheet renders images, PDFs, audio, video,
+    /// MS Office, iWork, USDZ, RTF — anything QL knows how to handle.
+    @State private var previewURL: URL?
+    /// Non-nil while a PassKit Add-to-Wallet sheet is open. Set by tapping
+    /// a `.pkpass` attachment; PKAddPassesViewController previews the pass
+    /// and offers install.
+    @State private var walletPassData: Data?
 
     public init(clawConfig: PilotConnection.Config, notificationTitle: String? = nil) {
         self.clawConfig = clawConfig
@@ -52,6 +60,32 @@ public struct ClawChatView: View {
                     .padding(.bottom, 80)
                     .transition(.opacity.combined(with: .move(edge: .bottom)))
             }
+        }
+        // QuickLook preview for non-pkpass attachments. Bound to previewURL
+        // so the sheet auto-dismisses when set to nil from the close button.
+        .sheet(isPresented: Binding(
+            get: { previewURL != nil },
+            set: { if !$0 { previewURL = nil } },
+        )) {
+            #if canImport(UIKit)
+            if let url = previewURL {
+                QuickLookSheet(url: url)
+                    .ignoresSafeArea()
+            }
+            #endif
+        }
+        // Apple Wallet pass install sheet, dedicated path for .pkpass.
+        .sheet(isPresented: Binding(
+            get: { walletPassData != nil },
+            set: { if !$0 { walletPassData = nil } },
+        )) {
+            #if canImport(UIKit)
+            if let data = walletPassData {
+                WalletPassSheet(passData: data) {
+                    walletPassData = nil
+                }
+            }
+            #endif
         }
         .onAppear { ensureConnected() }
         .onDisappear {
@@ -389,7 +423,7 @@ public struct ClawChatView: View {
             if m.sender == .me { Spacer(minLength: 40) }
             VStack(alignment: m.sender == .me ? .trailing : .leading, spacing: 6) {
                 ForEach(Array(m.attachments.enumerated()), id: \.offset) { _, att in
-                    attachmentView(att, alignment: m.sender == .me ? .trailing : .leading)
+                    attachmentView(att, messageId: m.id, alignment: m.sender == .me ? .trailing : .leading)
                 }
                 if !m.text.isEmpty {
                     Text(renderChatText(m.text))
@@ -448,35 +482,100 @@ public struct ClawChatView: View {
     }
 
     @ViewBuilder
-    private func attachmentView(_ att: ChatAttachment, alignment: HorizontalAlignment) -> some View {
-        switch att.kind {
-        case .image:
-            #if canImport(UIKit)
-            if let uiImage = UIImage(data: att.bytes) {
-                Image(uiImage: uiImage)
-                    .resizable()
-                    .scaledToFit()
-                    .frame(maxWidth: 240, maxHeight: 240)
-                    .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-            } else {
-                fileChip(filename: att.filename ?? "image", size: att.bytes.count, system: "photo.fill")
+    private func attachmentView(
+        _ att: ChatAttachment,
+        messageId: String,
+        alignment: HorizontalAlignment,
+    ) -> some View {
+        Group {
+            switch att.kind {
+            case .image:
+                #if canImport(UIKit)
+                if let uiImage = UIImage(data: att.bytes) {
+                    Image(uiImage: uiImage)
+                        .resizable()
+                        .scaledToFit()
+                        .frame(maxWidth: 240, maxHeight: 240)
+                        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                } else {
+                    fileChip(filename: att.filename ?? "image", size: att.bytes.count, system: "photo.fill")
+                }
+                #else
+                if let nsImage = NSImage(data: att.bytes) {
+                    Image(nsImage: nsImage)
+                        .resizable()
+                        .scaledToFit()
+                        .frame(maxWidth: 240, maxHeight: 240)
+                        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                } else {
+                    fileChip(filename: att.filename ?? "image", size: att.bytes.count, system: "photo.fill")
+                }
+                #endif
+            case .file:
+                // Special-case Wallet passes — distinct icon + label so users
+                // recognise it before tap.
+                if isWalletPass(att) {
+                    fileChip(
+                        filename: att.filename ?? "pass.pkpass",
+                        size: att.bytes.count,
+                        system: "wallet.pass.fill",
+                    )
+                } else {
+                    fileChip(
+                        filename: att.filename ?? "file",
+                        size: att.bytes.count,
+                        system: iconForFileMime(att.mime, filename: att.filename),
+                    )
+                }
+            case .audio:
+                fileChip(filename: att.filename ?? "audio", size: att.bytes.count, system: "waveform")
             }
-            #else
-            if let nsImage = NSImage(data: att.bytes) {
-                Image(nsImage: nsImage)
-                    .resizable()
-                    .scaledToFit()
-                    .frame(maxWidth: 240, maxHeight: 240)
-                    .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-            } else {
-                fileChip(filename: att.filename ?? "image", size: att.bytes.count, system: "photo.fill")
-            }
-            #endif
-        case .file:
-            fileChip(filename: att.filename ?? "file", size: att.bytes.count, system: "doc.fill")
-        case .audio:
-            fileChip(filename: att.filename ?? "audio", size: att.bytes.count, system: "waveform")
         }
+        // Tap → QuickLook (or PassKit for .pkpass). Native iOS viewers
+        // handle images, PDFs, audio, video, RTF, MS Office, iWork, USDZ,
+        // and pkpass previews; PKAddPassesViewController is the dedicated
+        // path for actually installing a wallet pass.
+        .contentShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .onTapGesture {
+            handleAttachmentTap(att, messageId: messageId)
+        }
+        .accessibilityHint("Double-tap to preview")
+    }
+
+    /// Icon to use in the file chip based on the attachment mime/filename
+    /// — gives the user a hint about what they're about to open without
+    /// reading the filename.
+    private func iconForFileMime(_ mime: String?, filename: String?) -> String {
+        let ext = filename?.lowercased().split(separator: ".").last.map(String.init) ?? ""
+        if mime == "application/pdf" || ext == "pdf" { return "doc.richtext.fill" }
+        if mime?.hasPrefix("image/") == true { return "photo.fill" }
+        if mime?.hasPrefix("video/") == true { return "play.rectangle.fill" }
+        if mime?.hasPrefix("audio/") == true { return "waveform" }
+        if mime == "application/json" || ext == "json" { return "curlybraces" }
+        if mime == "text/plain" || mime == "text/markdown" || ext == "txt" || ext == "md" {
+            return "doc.text.fill"
+        }
+        return "doc.fill"
+    }
+
+    /// Route an attachment tap to the right native iOS viewer. Wallet
+    /// passes go through PassKit; everything else through QuickLook.
+    /// Bytes are written to a temp file on first tap (cheap; QL needs a
+    /// URL not raw Data).
+    private func handleAttachmentTap(_ att: ChatAttachment, messageId: String) {
+        #if canImport(UIKit)
+        if isWalletPass(att) {
+            walletPassData = att.bytes
+            return
+        }
+        do {
+            previewURL = try writeAttachmentToPreviewTemp(att, messageId: messageId)
+        } catch {
+            // Last-ditch: we'd rather silently swallow than crash; user
+            // taps again or restarts. The attachment bubble still shows.
+            return
+        }
+        #endif
     }
 
     private func fileChip(filename: String, size: Int, system: String) -> some View {
