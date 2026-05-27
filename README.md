@@ -39,7 +39,7 @@ npm run build
 npm test
 ```
 
-The plugin depends on `pilotprotocol` (Node SDK from the [web4](https://github.com/TeoSlayer/web4) repo) and `openclaw`. Both are expected to be resolvable in your environment — wiring this up cleanly is part of the WIP.
+The plugin pulls `pilotprotocol` from npm and `openclaw` as a devDep. `npm install` resolves both with no manual setup.
 
 **iOS app** (requires Xcode 16+):
 
@@ -49,7 +49,7 @@ make project   # regenerate the xcodegen project
 open ClawChat.xcworkspace
 ```
 
-The Swift package depends on `web4/sdk/swift`, which embeds `libpilot`.
+The Swift package depends on [pilot-protocol/sdk-swift](https://github.com/pilot-protocol/sdk-swift) (URL-pinned in `Package.swift`); SwiftPM downloads the `Pilot.xcframework` from the GitHub Release on resolve and verifies it against a baked-in checksum.
 
 ## Wire format (v1)
 

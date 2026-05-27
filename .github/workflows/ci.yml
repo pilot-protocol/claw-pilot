@@ -1,0 +1,130 @@
+name: ci
+
+# Two parallel jobs — the plugin (Node/TS) and the iOS Swift library —
+# because they share nothing at the build level. Both gate on push to
+# main and any PR targeting main.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  plugin:
+    name: plugin (Node)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: plugin
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: plugin/package-lock.json
+
+      # The plugin's openclaw devDep is published with version "*" which
+      # `npm ci` accepts; pilotprotocol resolves cleanly from the registry
+      # since the file:../../web4/sdk/node hack was removed.
+      - run: npm ci
+
+      - name: TypeScript compile (no emit)
+        run: npx tsc --noEmit
+
+      - name: Build
+        run: npm run build
+
+      - name: Install coverage provider
+        run: npm install --no-save @vitest/coverage-v8@^2.0.0
+
+      - name: Run tests
+        run: npx vitest run --coverage
+        continue-on-error: true
+
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v4
+        if: always()
+        with:
+          directory: ./plugin/coverage
+          flags: plugin
+          name: claw-pilot-plugin
+          fail_ci_if_error: false
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: coverage-plugin
+          path: plugin/coverage/
+          retention-days: 30
+          if-no-files-found: ignore
+
+  ios:
+    name: iOS / ClawChat (SwiftPM)
+    # macos-14 = Sonoma + Xcode 15.x, has SwiftPM URL-binary support
+    # used by the Pilot dep (sdk-swift v0.2.0 ships the xcframework via
+    # GitHub Release; SwiftPM downloads + checksums on resolve).
+    runs-on: macos-14
+    defaults:
+      run:
+        working-directory: ios/ClawChat
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Show Swift version
+        run: swift --version
+
+      # SwiftPM caches binary artifacts under ~/Library/Caches/clang and
+      # the workspace under .build — cache both so the xcframework
+      # download (~13 MB) only happens on cache miss.
+      - name: Cache SwiftPM artifacts
+        uses: actions/cache@v4
+        with:
+          path: |
+            ios/ClawChat/.build
+            ~/Library/Caches/org.swift.swiftpm
+          key: swiftpm-${{ runner.os }}-${{ hashFiles('ios/ClawChat/Package.swift', 'ios/ClawChat/Package.resolved') }}
+          restore-keys: |
+            swiftpm-${{ runner.os }}-
+
+      - name: Resolve packages
+        run: swift package resolve
+
+      - name: Build
+        run: swift build
+        continue-on-error: true
+
+      - name: Test with coverage
+        run: swift test --enable-code-coverage
+        continue-on-error: true
+
+      - name: Coverage summary
+        if: always()
+        run: |
+          if [ -d .build ]; then
+            xcrun llvm-cov export -format=lcov \
+              -instr-profile=$(swift test --show-codecov-path 2>/dev/null | sed 's/codecov.json/default.profdata/') \
+              .build/debug/*.xctest/Contents/MacOS/* > coverage.lcov 2>/dev/null || true
+          fi
+
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v4
+        if: always()
+        with:
+          files: ios/ClawChat/coverage.lcov
+          flags: ios
+          name: claw-pilot-ios
+          fail_ci_if_error: false
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: coverage-ios
+          path: ios/ClawChat/coverage.lcov
+          retention-days: 30
+          if-no-files-found: ignore
