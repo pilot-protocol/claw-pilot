@@ -111,6 +111,17 @@ export function buildPilotReplyDispatcher(deps: ReplyDispatcherDeps): ReplyDispa
   async function sendTextEnvelopes(text: string, kind: ReplyDispatchKind): Promise<void> {
     const envelopes = chunkAgentText(text, newId());
     const encoded: Buffer[] = envelopes.map((env) => encodeEnvelope(env));
+    // Visibility: success path was previously silent, which made it
+    // impossible to tell "dispatcher was invoked with nothing" from
+    // "dispatcher sent successfully." A single info line per reply is
+    // cheap and pays for itself the next time delivery is unclear.
+    logger?.info("pilot reply: dispatching text", {
+      kind,
+      peer: peerAddr,
+      messageId: envelopes[0]!.id,
+      chunks: envelopes.length,
+      bytes: text.length,
+    });
     await sendChunks({ encoded, envelopes, kind });
   }
 
@@ -144,6 +155,16 @@ export function buildPilotReplyDispatcher(deps: ReplyDispatcherDeps): ReplyDispa
       id: newId(),
     });
     const encoded: Buffer[] = envelopes.map((env) => encodeEnvelope(env));
+    logger?.info("pilot reply: dispatching media", {
+      kind,
+      peer: peerAddr,
+      messageId: envelopes[0]!.id,
+      chunks: envelopes.length,
+      bytes: bytes.length,
+      media,
+      mime,
+      filename,
+    });
     await sendChunks({ encoded, envelopes, kind });
   }
 

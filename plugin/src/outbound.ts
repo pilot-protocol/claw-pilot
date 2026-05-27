@@ -184,6 +184,17 @@ async function sendOrEnqueue(params: {
   const encoded: Buffer[] = envelopes.map((env) =>
     encodeEnvelope(env as Parameters<typeof encodeEnvelope>[0]),
   );
+  // Visibility: success path was silent, hiding successful sends from
+  // diagnostics. One info line per OutboundAdapter call lets us tell
+  // "channel-adapter route fired and succeeded" from "never ran" — the
+  // missing diagnostic that left the recent image-delivery question
+  // ambiguous (was the agent silent? Or was it sending via this path?).
+  logger?.info("pilot outbound: sending", {
+    peer: peerAddr,
+    port: appPort,
+    messageId: envelopes[0]!.id,
+    chunks: envelopes.length,
+  });
   for (let i = 0; i < envelopes.length; i++) {
     try {
       await transport.send(peerAddr, appPort, encoded[i]!);
