@@ -261,6 +261,17 @@ export class InboundPipeline {
     this.recent.add(reassembled.id);
     this.recentOrder.push({ id: reassembled.id, ts: Date.now() });
 
+    // Send the ack BEFORE dispatching to the agent. The dispatch call
+    // walks `dispatchReplyFromConfig` which runs the full agent turn
+    // (model call + tools, often 10–30s+ even on the happy path). If
+    // the agent hangs on a broken upstream tool — as it can — the ack
+    // would never fire, the sender's bubble would stay "sending"
+    // forever, and the user reads that as "my message didn't arrive."
+    // The ack means "the channel received and accepted your envelope,"
+    // not "the agent has replied." Decoupling them removes a whole
+    // class of UI mystery.
+    void this.sendAck(reassembled.id, peer);
+
     try {
       await this.deps.dispatch({
         accountId: this.deps.account.accountId,
@@ -269,7 +280,6 @@ export class InboundPipeline {
         messageId: reassembled.id,
         timestamp: reassembled.ts,
       });
-      void this.sendAck(reassembled.id, peer);
     } catch (e) {
       this.deps.logger.error("pilot inbound: dispatch failed", {
         id: reassembled.id,
@@ -329,6 +339,10 @@ export class InboundPipeline {
       size: out.bytes.length,
     };
 
+    // Ack-before-dispatch — same reasoning as the text path. See the
+    // comment in handleDatagram above.
+    void this.sendAck(out.id, peer);
+
     try {
       await this.deps.dispatch({
         accountId: this.deps.account.accountId,
@@ -338,7 +352,6 @@ export class InboundPipeline {
         timestamp: out.ts,
         attachments: [attachment],
       });
-      void this.sendAck(out.id, peer);
     } catch (e) {
       this.deps.logger.error("pilot inbound: media dispatch failed", {
         id: out.id,
