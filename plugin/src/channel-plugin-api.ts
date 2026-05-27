@@ -12,7 +12,7 @@ import { DEFAULT_ACCOUNT_ID } from "./config.js";
 import { PilotLifecycle } from "./lifecycle.js";
 import { buildPilotDirectory } from "./directory.js";
 import { buildPilotOutbound } from "./outbound.js";
-import { buildPilotResolver } from "./resolver.js";
+import { buildPilotMessagingTargetResolver, buildPilotResolver } from "./resolver.js";
 import { buildPilotStatus } from "./status.js";
 import type { InboundLogger } from "./inbound.js";
 
@@ -157,6 +157,16 @@ export function buildPilotChannelPlugin(deps: BuildPilotPluginDeps): PilotChanne
         const trimmed = stripped.trim();
         return trimmed.length > 0 ? trimmed : undefined;
       },
+      // The actual hook openclaw's `message.send` agent tool consults
+      // per-target. Without this, the resolver chain falls through to
+      // `unknownTargetError("Unknown target ... for Pilot")` which the
+      // agent catches and rewrites as "image delivery isn't supported."
+      // ChannelPlugin.resolver below is the batch surface used by
+      // autocomplete / mention search; both need to exist.
+      targetResolver: buildPilotMessagingTargetResolver({
+        resolvePeerCache: (accountId) =>
+          lifecycle.getAccount(accountId ?? DEFAULT_ACCOUNT_ID)?.peerAddressCache,
+      }),
     },
   } as unknown as ChannelPlugin;
 

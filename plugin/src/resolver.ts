@@ -32,6 +32,83 @@ export type ResolverDeps = {
   resolvePeerCache: (accountId: string | null | undefined) => PeerAddressCache | undefined;
 };
 
+/** Shape openclaw expects back from `messaging.targetResolver.resolveTarget`. */
+export type ResolvedMessagingTarget = {
+  to: string;
+  kind: "user" | "group" | "channel";
+  display?: string;
+  source?: string;
+};
+
+/**
+ * Core resolution — used by both `messaging.targetResolver.resolveTarget`
+ * (singular, what openclaw's `message.send` tool actually calls per-target)
+ * and `ChannelPlugin.resolver.resolveTargets` (plural, the batch surface).
+ * Returns the canonical address + kind, or undefined if the input isn't
+ * a recognisable target.
+ */
+export function resolvePilotTarget(
+  rawInput: string,
+  cache: PeerAddressCache | undefined,
+): ResolvedMessagingTarget | undefined {
+  const input = rawInput.trim();
+  if (input.length === 0) return undefined;
+  // Strip `pilot:` provider prefix (agent's explicit-channel form).
+  const stripped = input.startsWith("pilot:") ? input.slice("pilot:".length).trim() : input;
+  // Strip a trailing `:port` — targets are address-only on this surface.
+  const addrOnly = stripped.replace(/(:\d+)$/, "");
+
+  if (isPilotAddress(addrOnly)) {
+    return { to: addrOnly, kind: "user", display: addrOnly, source: "address" };
+  }
+  if (looksLikeNodeId(addrOnly)) {
+    const nodeId = Number(addrOnly);
+    // Only trust the cache when we've actually seen the peer inbound —
+    // PeerAddressCache.resolve falls back to network 0 for unseen ids
+    // which would silently route to nowhere.
+    if (cache?.has(nodeId)) {
+      const fromCache = cache.resolve(addrOnly);
+      if (fromCache) {
+        return { to: fromCache, kind: "user", display: fromCache, source: "node_id" };
+      }
+    }
+  }
+  return undefined;
+}
+
+/**
+ * Returns the `messaging.targetResolver` block openclaw's `message.send`
+ * tool consults to canonicalise a target. The earlier `buildPilotResolver`
+ * (plural, kept below) is registered on `ChannelPlugin.resolver` for the
+ * batch path (autocomplete / mention search); BOTH need to exist —
+ * openclaw's tool dispatch calls the singular form, the listing surfaces
+ * call the plural.
+ */
+export function buildPilotMessagingTargetResolver(deps: ResolverDeps): {
+  looksLikeId: (raw: string) => boolean;
+  hint: string;
+  resolveTarget: (params: {
+    accountId?: string | null;
+    input: string;
+    normalized: string;
+  }) => Promise<ResolvedMessagingTarget | undefined>;
+} {
+  return {
+    // Anything that looks like a pilot address OR a numeric node_id should
+    // be treated as an explicit id (skips the directory-fuzzy-match phase).
+    looksLikeId: (raw: string) => {
+      const stripped = raw.startsWith("pilot:") ? raw.slice("pilot:".length).trim() : raw.trim();
+      const addrOnly = stripped.replace(/(:\d+)$/, "");
+      return isPilotAddress(addrOnly) || looksLikeNodeId(addrOnly);
+    },
+    hint: "pilot targets are `N:NNNN.HHHH.LLLL` addresses (or a known node_id)",
+    async resolveTarget({ accountId, input }) {
+      const cache = deps.resolvePeerCache(accountId ?? null);
+      return resolvePilotTarget(input, cache);
+    },
+  };
+}
+
 /**
  * Returns the adapter object openclaw expects on
  * `ChannelPlugin.resolver.resolveTargets`. The implementation mirrors the
