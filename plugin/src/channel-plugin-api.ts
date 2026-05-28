@@ -135,10 +135,7 @@ export function buildPilotChannelPlugin(deps: BuildPilotPluginDeps): PilotChanne
         accountId: string;
       }) => {
         deps.logger.info("pilot channel: account changed, reloading", { accountId });
-        const acct = lifecycle.getAccount(accountId);
-        if (acct) {
-          await acct.transport.stop();
-        }
+        await lifecycle.stopAccount(accountId);
         await lifecycle.startAll(nextCfg);
       },
       onAccountRemoved: async ({ accountId }: { accountId: string }) => {
