@@ -275,6 +275,19 @@ export class PilotLifecycle {
     return this.accounts.get(accountId)?.outbox;
   }
 
+  /** Stop a single account and remove it from the live map. */
+  async stopAccount(accountId: string): Promise<void> {
+    const state = this.accounts.get(accountId);
+    if (!state) return;
+    try {
+      if (state.drainTimer) clearInterval(state.drainTimer);
+      state.pipeline.stop();
+      await state.transport.stop();
+    } finally {
+      this.accounts.delete(accountId);
+    }
+  }
+
   async stopAll(): Promise<void> {
     const tasks: Promise<void>[] = [];
     for (const [id, state] of this.accounts) {
