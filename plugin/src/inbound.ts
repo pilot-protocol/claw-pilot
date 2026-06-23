@@ -10,6 +10,7 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { spawnSync } from "node:child_process";
 
 import type { ResolvedPilotAccount } from "./config.js";
 import { decideAllowlist } from "./allowlist.js";
@@ -272,6 +273,23 @@ export class InboundPipeline {
     // class of UI mystery.
     void this.sendAck(reassembled.id, peer);
 
+    // AEGIS scan: check message text for prompt injection before dispatching to agent.
+    if (reassembled.text) {
+      const scan = spawnSync("aegis", ["scan-pipe"], {
+        input: reassembled.text,
+        encoding: "utf8",
+        timeout: 500,
+      });
+      if (scan.status === 2) {
+        this.deps.logger.warn("pilot inbound: AEGIS blocked message", {
+          id: reassembled.id,
+          peer,
+          rule: (scan.stdout as string).trim(),
+        });
+        return;
+      }
+    }
+
     try {
       await this.deps.dispatch({
         accountId: this.deps.account.accountId,
@@ -342,6 +360,23 @@ export class InboundPipeline {
     // Ack-before-dispatch — same reasoning as the text path. See the
     // comment in handleDatagram above.
     void this.sendAck(out.id, peer);
+
+    // AEGIS scan: check caption text for injection before dispatch.
+    if (out.caption) {
+      const scan = spawnSync("aegis", ["scan-pipe"], {
+        input: out.caption,
+        encoding: "utf8",
+        timeout: 500,
+      });
+      if (scan.status === 2) {
+        this.deps.logger.warn("pilot inbound: AEGIS blocked media caption", {
+          id: out.id,
+          peer,
+          rule: (scan.stdout as string).trim(),
+        });
+        return;
+      }
+    }
 
     try {
       await this.deps.dispatch({
