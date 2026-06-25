@@ -5,6 +5,8 @@
 // fragmentation. If text exceeds that, the sender splits into N envelopes
 // sharing the same `id` and assembles via (`seq`, `total`).
 
+import { randomUUID } from "node:crypto";
+
 export const WIRE_VERSION = 1 as const;
 
 /** Maximum bytes for a single envelope's JSON encoding. */
@@ -202,13 +204,9 @@ export async function verifyEnvelope(env: Envelope, secret: string): Promise<boo
   return timingSafeEqual(providedBuf, expected);
 }
 
-/** Generate a short, monotonically-tending message id (24 base36 chars). */
+/** Generate a cryptographically-random, collision-resistant message id. */
 export function newId(): string {
-  const t = Date.now().toString(36).padStart(9, "0");
-  const r = Math.floor(Math.random() * 36 ** 12)
-    .toString(36)
-    .padStart(12, "0");
-  return `${t}${r}`;
+  return randomUUID();
 }
 
 /**
