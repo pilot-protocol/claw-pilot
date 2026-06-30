@@ -128,6 +128,7 @@ describe("InboundPipeline — HMAC bypasses allowlist", () => {
         dispatched.push(m);
       },
       logger: silentLogger(),
+      aegisScan: async () => ({ blocked: false, rule: "" }),
     });
     pipeline.attach(transport);
 
@@ -170,6 +171,7 @@ describe("InboundPipeline — HMAC bypasses allowlist", () => {
         dispatched.push(m);
       },
       logger,
+      aegisScan: async () => ({ blocked: false, rule: "" }),
     });
     pipeline.attach(transport);
 
@@ -207,6 +209,7 @@ describe("InboundPipeline — HMAC bypasses allowlist", () => {
         dispatched.push(m);
       },
       logger: silentLogger(),
+      aegisScan: async () => ({ blocked: false, rule: "" }),
     });
     pipeline.attach(transport);
 

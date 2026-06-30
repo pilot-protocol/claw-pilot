@@ -76,6 +76,7 @@ describe("full plugin integration (synthetic openclaw)", () => {
     const lifecycle = new PilotLifecycle({
       logger,
       createTransport: () => transport,
+      aegisScan: async () => ({ blocked: false, rule: "" }),
     });
     setPilotRuntime({
       host: fakeApi.runtime,
@@ -91,8 +92,7 @@ describe("full plugin integration (synthetic openclaw)", () => {
     // 5. Simulate an inbound datagram from the allowlisted phone
     const env = chunkUserText("hello claw, here is a test")[0]!;
     transport.emitDatagram(ALICE, encodeEnvelope(env));
-    await new Promise((r) => setImmediate(r));
-    await new Promise((r) => setImmediate(r));
+    for (let i = 0; i < 8; i++) await new Promise((r) => setImmediate(r));
 
     // 6. Assert openclaw was called with the right ctx shape
     expect(dispatchReplyFromConfig).toHaveBeenCalledTimes(1);
@@ -159,6 +159,7 @@ describe("full plugin integration (synthetic openclaw)", () => {
     const lifecycle = new PilotLifecycle({
       logger,
       createTransport: () => transport,
+      aegisScan: async () => ({ blocked: false, rule: "" }),
     });
     setPilotRuntime({
       host: fakeApi.runtime,
@@ -173,8 +174,7 @@ describe("full plugin integration (synthetic openclaw)", () => {
       ALICE,
       encodeEnvelope(chunkUserText("fail then succeed")[0]!),
     );
-    await new Promise((r) => setImmediate(r));
-    await new Promise((r) => setImmediate(r));
+    for (let i = 0; i < 8; i++) await new Promise((r) => setImmediate(r));
 
     expect(dispatchReplyFromConfig).toHaveBeenCalledTimes(1);
     expect(enqueue).toHaveBeenCalledTimes(1);

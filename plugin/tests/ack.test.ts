@@ -51,6 +51,7 @@ describe("inbound ACK", () => {
         dispatched.push(m);
       },
       logger: silentLogger(),
+      aegisScan: async () => ({ blocked: false, rule: "" }),
       ackTransport: transport,
     });
     pipeline.attach(transport);
@@ -85,6 +86,7 @@ describe("inbound ACK", () => {
         dispatched.push(m);
       },
       logger: silentLogger(),
+      aegisScan: async () => ({ blocked: false, rule: "" }),
       ackTransport: transport,
     });
     pipeline.attach(transport);
@@ -125,6 +127,7 @@ describe("inbound ACK", () => {
         /* noop */
       },
       logger: silentLogger(),
+      aegisScan: async () => ({ blocked: false, rule: "" }),
     });
     pipeline.attach(transport);
 
@@ -148,6 +151,7 @@ describe("inbound ACK", () => {
         /* noop */
       },
       logger: silentLogger(),
+      aegisScan: async () => ({ blocked: false, rule: "" }),
       ackTransport: transport,
     });
     pipeline.attach(transport);

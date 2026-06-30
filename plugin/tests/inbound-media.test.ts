@@ -63,6 +63,7 @@ describe("InboundPipeline — media", () => {
         dispatched.push(m);
       },
       logger,
+      aegisScan: async () => ({ blocked: false, rule: "" }),
       mediaDir,
     });
     pipeline.attach(transport);
@@ -111,6 +112,7 @@ describe("InboundPipeline — media", () => {
         dispatched.push(m);
       },
       logger,
+      aegisScan: async () => ({ blocked: false, rule: "" }),
     });
     pipeline.attach(transport);
 
@@ -143,6 +145,7 @@ describe("InboundPipeline — media", () => {
         dispatched.push(m);
       },
       logger,
+      aegisScan: async () => ({ blocked: false, rule: "" }),
       maxMediaBytes: 1_000,
     });
     pipeline.attach(transport);
@@ -178,6 +181,7 @@ describe("InboundPipeline — media", () => {
         dispatched.push(m);
       },
       logger,
+      aegisScan: async () => ({ blocked: false, rule: "" }),
       mediaDir,
     });
     pipeline.attach(transport);

@@ -10,9 +10,9 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { spawnSync } from "node:child_process";
 
 import type { ResolvedPilotAccount } from "./config.js";
+import { createAegisScan, type AegisScan } from "./aegis-scan.js";
 import { decideAllowlist } from "./allowlist.js";
 import type { PeerAddressCache } from "./peer-address.js";
 import type { IncomingDatagram, Transport } from "./transport.js";
@@ -103,6 +103,13 @@ export type InboundDeps = {
    * common case but wrong for multi-network deployments.
    */
   peerAddressCache?: PeerAddressCache;
+  /**
+   * AEGIS prompt-injection scanner. Runs on every inbound text / media
+   * caption before dispatch; a `blocked` result drops the message. Async and
+   * non-blocking so one message's scan never parks the event loop. Defaults
+   * to the real `aegis scan-pipe` subprocess; tests inject a stub.
+   */
+  aegisScan?: AegisScan;
 };
 
 export class InboundPipeline {
@@ -115,12 +122,14 @@ export class InboundPipeline {
   private recentOrder: Array<{ id: string; ts: number }> = [];
   private readonly mediaDir: string;
   private readonly maxMediaBytes: number;
+  private readonly aegisScan: AegisScan;
 
   constructor(deps: InboundDeps) {
     this.deps = deps;
     this.recent = deps.recentIds ?? new Set();
     this.mediaDir = deps.mediaDir ?? join(tmpdir(), "claw-pilot-inbound");
     this.maxMediaBytes = deps.maxMediaBytes ?? 25 * 1024 * 1024;
+    this.aegisScan = deps.aegisScan ?? createAegisScan();
     try {
       mkdirSync(this.mediaDir, { recursive: true });
     } catch (e) {
@@ -273,18 +282,16 @@ export class InboundPipeline {
     // class of UI mystery.
     void this.sendAck(reassembled.id, peer);
 
-    // AEGIS scan: check message text for prompt injection before dispatching to agent.
+    // AEGIS scan: check message text for prompt injection before dispatching
+    // to the agent. Async + non-blocking so one slow scan can't stall the
+    // recv loop for every other peer. A scanner outage fails open.
     if (reassembled.text) {
-      const scan = spawnSync("aegis", ["scan-pipe"], {
-        input: reassembled.text,
-        encoding: "utf8",
-        timeout: 500,
-      });
-      if (scan.status === 2) {
+      const scan = await this.aegisScan(reassembled.text);
+      if (scan.blocked) {
         this.deps.logger.warn("pilot inbound: AEGIS blocked message", {
           id: reassembled.id,
           peer,
-          rule: (scan.stdout as string).trim(),
+          rule: scan.rule,
         });
         return;
       }
@@ -361,18 +368,15 @@ export class InboundPipeline {
     // comment in handleDatagram above.
     void this.sendAck(out.id, peer);
 
-    // AEGIS scan: check caption text for injection before dispatch.
+    // AEGIS scan: check caption text for injection before dispatch. Same
+    // async, fail-open contract as the text path above.
     if (out.caption) {
-      const scan = spawnSync("aegis", ["scan-pipe"], {
-        input: out.caption,
-        encoding: "utf8",
-        timeout: 500,
-      });
-      if (scan.status === 2) {
+      const scan = await this.aegisScan(out.caption);
+      if (scan.blocked) {
         this.deps.logger.warn("pilot inbound: AEGIS blocked media caption", {
           id: out.id,
           peer,
-          rule: (scan.stdout as string).trim(),
+          rule: scan.rule,
         });
         return;
       }

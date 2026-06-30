@@ -70,6 +70,7 @@ describe("outbound + outbox integration", () => {
       account,
       dispatch: async () => {},
       logger: silent(),
+      aegisScan: async () => ({ blocked: false, rule: "" }),
       onPeerProofOfLife: (peer) => {
         if (outbox.forPeer(peer).length === 0) return;
         void outbox.drain(peer, (p, port, data) => transport.send(p, port, data));
