@@ -54,6 +54,7 @@ describe("InboundPipeline", () => {
       account: makeAccount(["1:0000.0000.AAAA"]),
       dispatch,
       logger,
+      aegisScan: async () => ({ blocked: false, rule: "" }),
     });
     pipeline.attach(transport);
 
@@ -87,6 +88,7 @@ describe("InboundPipeline", () => {
       account: makeAccount(["1:0000.0000.AAAA"]),
       dispatch,
       logger,
+      aegisScan: async () => ({ blocked: false, rule: "" }),
     });
     pipeline.attach(transport);
 
@@ -114,6 +116,7 @@ describe("InboundPipeline", () => {
       account: makeAccount(["1:0000.0000.AAAA"]),
       dispatch,
       logger,
+      aegisScan: async () => ({ blocked: false, rule: "" }),
     });
     pipeline.attach(transport);
 
@@ -142,6 +145,7 @@ describe("InboundPipeline", () => {
       account: makeAccount(["1:0000.0000.AAAA"]),
       dispatch,
       logger,
+      aegisScan: async () => ({ blocked: false, rule: "" }),
     });
     pipeline.attach(transport);
 
@@ -174,6 +178,7 @@ describe("InboundPipeline", () => {
       account: makeAccount(["1:0000.0000.AAAA"]),
       dispatch,
       logger,
+      aegisScan: async () => ({ blocked: false, rule: "" }),
     });
     pipeline.attach(transport);
 
@@ -213,6 +218,7 @@ describe("InboundPipeline", () => {
       account: makeAccount(["1:0000.0000.AAAA"]),
       dispatch,
       logger,
+      aegisScan: async () => ({ blocked: false, rule: "" }),
     });
     pipeline.attach(transport);
 
@@ -242,6 +248,7 @@ describe("InboundPipeline", () => {
       account: makeAccount(["1:0000.0000.AAAA"]),
       dispatch,
       logger,
+      aegisScan: async () => ({ blocked: false, rule: "" }),
     });
     pipeline.attach(transport);
 

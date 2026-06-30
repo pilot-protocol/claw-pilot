@@ -9,6 +9,7 @@ import type { OpenClawConfig } from "./openclaw-types.js";
 import type { PilotAccountConfig, ResolvedPilotAccount } from "./config.js";
 import { DEFAULT_ACCOUNT_ID, resolveAccount } from "./config.js";
 import { InboundPipeline, type InboundLogger } from "./inbound.js";
+import type { AegisScan } from "./aegis-scan.js";
 import { Outbox } from "./outbox.js";
 import { PeerAddressCache } from "./peer-address.js";
 import { getPilotRuntime } from "./runtime-api.js";
@@ -49,6 +50,13 @@ export type LifecycleDeps = {
    * Periodic drain interval (ms). Defaults to 30s. Tests can shorten.
    */
   outboxDrainIntervalMs?: number;
+  /**
+   * AEGIS prompt-injection scanner passed through to each account's
+   * InboundPipeline. Defaults (in the pipeline) to the real `aegis scan-pipe`
+   * subprocess; tests inject a stub so the integration path stays
+   * deterministic and never execs a real binary.
+   */
+  aegisScan?: AegisScan;
 };
 
 export class PilotLifecycle {
@@ -213,6 +221,7 @@ export class PilotLifecycle {
       account,
       dispatch,
       logger: this.deps.logger,
+      aegisScan: this.deps.aegisScan,
       // Reuse the same transport for ACKs — the sender Driver inside it is
       // the one with permission to send to the peer.
       ackTransport: transport,

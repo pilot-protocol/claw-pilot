@@ -75,6 +75,7 @@ describe("InboundPipeline — ack send", () => {
       account: resolveAccount({ allowlist: [ALICE], appPort: 9000 }),
       dispatch,
       logger: makeLogger(),
+      aegisScan: async () => ({ blocked: false, rule: "" }),
       ackTransport,
     });
     pipeline.attach(transport);
@@ -111,6 +112,7 @@ describe("InboundPipeline — ack send", () => {
       account: resolveAccount({ allowlist: [ALICE] }),
       dispatch,
       logger,
+      aegisScan: async () => ({ blocked: false, rule: "" }),
       ackTransport,
     });
     pipeline.attach(transport);
@@ -139,6 +141,7 @@ describe("InboundPipeline — onPeerProofOfLife", () => {
       account: resolveAccount({ allowlist: [ALICE] }),
       dispatch,
       logger: makeLogger(),
+      aegisScan: async () => ({ blocked: false, rule: "" }),
       onPeerProofOfLife,
     });
     pipeline.attach(transport);
@@ -162,6 +165,7 @@ describe("InboundPipeline — onPeerProofOfLife", () => {
       account: resolveAccount({ allowlist: [ALICE] }),
       dispatch,
       logger,
+      aegisScan: async () => ({ blocked: false, rule: "" }),
       onPeerProofOfLife: () => {
         throw new Error("listener exploded");
       },
@@ -190,6 +194,7 @@ describe("InboundPipeline — onPeerProofOfLife", () => {
       account: resolveAccount({ allowlist: [ALICE] }),
       dispatch: vi.fn(),
       logger: makeLogger(),
+      aegisScan: async () => ({ blocked: false, rule: "" }),
       onPeerProofOfLife,
     });
     pipeline.attach(transport);
@@ -221,6 +226,7 @@ describe("InboundPipeline — HMAC-authenticated peer", () => {
       account: resolveAccount({ allowlist: ["2:0000.0000.0002"], sharedSecret: SECRET }),
       dispatch,
       logger: makeLogger(),
+      aegisScan: async () => ({ blocked: false, rule: "" }),
       onPeerProofOfLife,
     });
     pipeline.attach(transport);
@@ -252,6 +258,7 @@ describe("InboundPipeline — peerAddressCache", () => {
       account: resolveAccount({ allowlist: [ALICE] }),
       dispatch,
       logger: makeLogger(),
+      aegisScan: async () => ({ blocked: false, rule: "" }),
       peerAddressCache,
     });
     pipeline.attach(transport);
@@ -280,6 +287,7 @@ describe("InboundPipeline — media path", () => {
       account: resolveAccount({ allowlist: [ALICE] }),
       dispatch,
       logger,
+      aegisScan: async () => ({ blocked: false, rule: "" }),
       maxMediaBytes: 64,
     });
     pipeline.attach(transport);
@@ -317,6 +325,7 @@ describe("InboundPipeline — media path", () => {
       account: resolveAccount({ allowlist: [ALICE] }),
       dispatch,
       logger: makeLogger(),
+      aegisScan: async () => ({ blocked: false, rule: "" }),
       mediaDir,
     });
     pipeline.attach(transport);
@@ -363,6 +372,7 @@ describe("InboundPipeline — media path", () => {
       account: resolveAccount({ allowlist: [ALICE] }),
       dispatch,
       logger: makeLogger(),
+      aegisScan: async () => ({ blocked: false, rule: "" }),
       mediaDir,
     });
     pipeline.attach(transport);
@@ -409,6 +419,7 @@ describe("InboundPipeline — media path", () => {
       account: resolveAccount({ allowlist: [ALICE] }),
       dispatch,
       logger: makeLogger(),
+      aegisScan: async () => ({ blocked: false, rule: "" }),
       mediaDir,
     });
     pipeline.attach(transport);
@@ -449,6 +460,7 @@ describe("InboundPipeline — media path", () => {
       account: resolveAccount({ allowlist: [ALICE] }),
       dispatch,
       logger: makeLogger(),
+      aegisScan: async () => ({ blocked: false, rule: "" }),
       mediaDir,
     });
     pipeline.attach(transport);
@@ -488,6 +500,7 @@ describe("InboundPipeline — unknown envelope kinds", () => {
       account: resolveAccount({ allowlist: [ALICE] }),
       dispatch,
       logger,
+      aegisScan: async () => ({ blocked: false, rule: "" }),
     });
     pipeline.attach(transport);
 
