@@ -38,10 +38,39 @@ describe("decideAllowlist", () => {
     });
   });
 
-  it("does not silently accept on a typo (case-sensitive net id)", () => {
-    // The pattern is hex case-insensitive for the hex parts, but the *exact*
-    // form we store should match the configured form. Strict equality here:
-    expect(decideAllowlist("1:0000.0000.aaaa", allow).allowed).toBe(false);
+  it("matches an allowlisted address whose hex differs only in case", () => {
+    // isValidPilotAddress accepts hex in either case, so both spellings name
+    // the same peer and both must resolve to the canonical form.
+    expect(decideAllowlist("1:0000.0000.aaaa", allow)).toEqual({
+      allowed: true,
+      peer: "1:0000.0000.AAAA",
+    });
+    expect(decideAllowlist("2:1234.5678.9abc:7777", allow)).toEqual({
+      allowed: true,
+      peer: "2:1234.5678.9ABC",
+    });
+  });
+
+  it("still rejects an address that is genuinely absent", () => {
+    expect(decideAllowlist("1:0000.0000.aaab", allow).allowed).toBe(false);
+    expect(decideAllowlist("9:0000.0000.aaaa", allow).allowed).toBe(false);
+  });
+
+  it("matches when the configured set itself is lower-case", () => {
+    const lower = new Set(["1:0000.0000.aaaa"]);
+    expect(decideAllowlist("1:0000.0000.AAAA", lower)).toEqual({
+      allowed: true,
+      peer: "1:0000.0000.AAAA",
+    });
+  });
+});
+
+describe("resolveAccount — allowlist canonicalization", () => {
+  it("stores allowlist entries in canonical case", () => {
+    const acc = resolveAccount({ allowlist: ["1:00ab.cdef.0000"] });
+    expect(acc.allowlist.has("1:00AB.CDEF.0000")).toBe(true);
+    expect(decideAllowlist("1:00ab.cdef.0000", acc.allowlist).allowed).toBe(true);
+    expect(decideAllowlist("1:00AB.CDEF.0000", acc.allowlist).allowed).toBe(true);
   });
 });
 

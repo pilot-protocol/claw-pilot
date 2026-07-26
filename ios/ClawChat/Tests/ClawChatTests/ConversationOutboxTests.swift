@@ -98,4 +98,87 @@ final class ConversationOutboxTests: XCTestCase {
         XCTAssertEqual(c.messages.count, 1)
         XCTAssertEqual(c.messages.first?.delivery, .sending)
     }
+
+    // MARK: - Attachments queued while offline
+
+    func testOfflineAttachmentIsQueuedAsSending() {
+        // sendAttachment with no connection must behave like send(): append
+        // the message in .sending rather than discarding it.
+        let c = Conversation()
+        c.messageStore = MessageStore(profileDir: workDir)
+        c.draft = "look at this"
+        c.sendAttachment(
+            kind: .image,
+            bytes: Data([0xFF, 0xD8, 0xFF, 0xE0]),
+            filename: "cat.jpg",
+            mime: "image/jpeg"
+        )
+        XCTAssertEqual(c.messages.count, 1)
+        let m = try? XCTUnwrap(c.messages.first)
+        XCTAssertEqual(m?.delivery, .sending)
+        XCTAssertEqual(m?.sender, .me)
+        XCTAssertEqual(m?.text, "look at this", "caption should ride along with the attachment")
+        XCTAssertEqual(m?.attachments.count, 1)
+        XCTAssertEqual(m?.attachments.first?.filename, "cat.jpg")
+        XCTAssertEqual(c.draft, "", "draft is consumed as the caption")
+    }
+
+    func testOfflineAttachmentSurvivesAppRestartWithBytesIntact() {
+        let bytes = Data([0x01, 0x02, 0x03, 0x04, 0x05])
+        do {
+            let c = Conversation()
+            c.messageStore = MessageStore(profileDir: workDir)
+            c.sendAttachment(kind: .file, bytes: bytes, filename: "doc.bin", mime: "application/octet-stream")
+            XCTAssertEqual(c.messages.count, 1)
+        }
+
+        // Fresh Conversation + store on the same dir, as after a cold launch.
+        let c2 = Conversation()
+        c2.messageStore = MessageStore(profileDir: workDir)
+        c2.loadFromStoreIfAvailable()
+        XCTAssertEqual(c2.messages.count, 1, "the queued attachment must be persisted, not dropped")
+        let m = c2.messages.first
+        XCTAssertEqual(m?.delivery, .sending)
+        XCTAssertEqual(m?.attachments.count, 1, "attachment must survive the round-trip")
+        XCTAssertEqual(m?.attachments.first?.bytes, bytes, "attachment bytes must be byte-identical")
+        XCTAssertEqual(m?.attachments.first?.kind, .file)
+        XCTAssertEqual(m?.attachments.first?.mime, "application/octet-stream")
+    }
+
+    func testRehydratedAttachmentIsSelectedByTheDrainQueue() {
+        // drainOutbox re-sends every from-me message left in .sending/.failed.
+        // A rehydrated media message must qualify, and must still carry the
+        // attachment that the media send path needs.
+        let c = Conversation()
+        c.messageStore = MessageStore(profileDir: workDir)
+        c.draft = "caption"
+        c.sendAttachment(kind: .audio, bytes: Data([0x11, 0x22]), filename: "vm.m4a", mime: "audio/mp4")
+        c.draft = "text only"
+        c.send()
+
+        let c2 = Conversation()
+        c2.messageStore = MessageStore(profileDir: workDir)
+        c2.loadFromStoreIfAvailable()
+
+        let pending = c2.messages.filter { $0.sender == .me && $0.delivery == .sending }
+        XCTAssertEqual(pending.count, 2)
+        let withMedia = pending.filter { !$0.attachments.isEmpty }
+        XCTAssertEqual(withMedia.count, 1, "the media message must be part of the drain set")
+        XCTAssertEqual(withMedia.first?.attachments.first?.kind, .audio)
+        // The drain branches on this to pick the media send path over text.
+        XCTAssertEqual(withMedia.first?.attachments.first?.wireKind, .audio)
+        XCTAssertEqual(withMedia.first?.text, "caption")
+
+        // And the text-only message must still route via the text path.
+        let textOnly = pending.filter { $0.attachments.isEmpty }
+        XCTAssertEqual(textOnly.count, 1)
+        XCTAssertEqual(textOnly.first?.text, "text only")
+    }
+
+    func testAttachmentWireKindMapping() {
+        // The mapping drainOutbox uses to re-send a persisted attachment.
+        XCTAssertEqual(ChatAttachment(kind: .image, bytes: Data()).wireKind, .image)
+        XCTAssertEqual(ChatAttachment(kind: .audio, bytes: Data()).wireKind, .audio)
+        XCTAssertEqual(ChatAttachment(kind: .file, bytes: Data()).wireKind, .file)
+    }
 }

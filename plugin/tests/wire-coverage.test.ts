@@ -107,3 +107,76 @@ describe("verifyEnvelope — defensive paths", () => {
     expect(await verifyEnvelope(signed, SECRET)).toBe(true);
   });
 });
+
+describe("Reassembler byte cap", () => {
+  function textPart(id: string, seq: number, total: number, text: string): UserMessage {
+    return { v: WIRE_VERSION, kind: "user", id, ts: 1_000, text, seq, total };
+  }
+
+  it("drops the in-flight message once held text passes the cap", () => {
+    const r = new Reassembler<UserMessage>(100);
+    const id = newId();
+    // Two 40-byte chunks fit; the third pushes the total to 120 > 100.
+    expect(r.push(textPart(id, 1, 5, "a".repeat(40)))).toBeNull();
+    expect(r.push(textPart(id, 2, 5, "b".repeat(40)))).toBeNull();
+    expect(r.push(textPart(id, 3, 5, "c".repeat(40)))).toBeNull();
+    // State was discarded, so the remaining chunks can never complete it.
+    expect(r.push(textPart(id, 4, 5, "d"))).toBeNull();
+    expect(r.push(textPart(id, 5, 5, "e"))).toBeNull();
+  });
+
+  it("still assembles a message that stays under the cap", () => {
+    const r = new Reassembler<UserMessage>(100);
+    const id = newId();
+    expect(r.push(textPart(id, 1, 2, "hello "))).toBeNull();
+    const out = r.push(textPart(id, 2, 2, "world"));
+    expect(out?.text).toBe("hello world");
+  });
+
+  it("does not let a re-sent seq inflate the running total", () => {
+    const r = new Reassembler<UserMessage>(100);
+    const id = newId();
+    // The same 40-byte chunk replayed many times replaces itself each time,
+    // so the held total stays at 40 and assembly still succeeds.
+    for (let i = 0; i < 20; i++) {
+      expect(r.push(textPart(id, 1, 2, "a".repeat(40)))).toBeNull();
+    }
+    const out = r.push(textPart(id, 2, 2, "b".repeat(40)));
+    expect(out?.text).toBe("a".repeat(40) + "b".repeat(40));
+  });
+});
+
+describe("MediaReassembler byte cap", () => {
+  function mediaPart(id: string, seq: number, total: number, bytes: number): MediaMessage {
+    return {
+      v: WIRE_VERSION,
+      kind: "media",
+      from: "user",
+      media: "file",
+      id,
+      ts: 1_000,
+      data: Buffer.alloc(bytes, 7).toString("base64"),
+      seq,
+      total,
+      ...(seq === 1 ? { filename: "x.bin", totalBytes: bytes * total } : {}),
+    };
+  }
+
+  it("drops the in-flight media once held payload passes the cap", () => {
+    const r = new MediaReassembler(100);
+    const id = newId();
+    expect(r.push(mediaPart(id, 1, 5, 40))).toBeNull();
+    expect(r.push(mediaPart(id, 2, 5, 40))).toBeNull();
+    expect(r.push(mediaPart(id, 3, 5, 40))).toBeNull();
+    expect(r.push(mediaPart(id, 4, 5, 40))).toBeNull();
+    expect(r.push(mediaPart(id, 5, 5, 40))).toBeNull();
+  });
+
+  it("still assembles media that stays under the cap", () => {
+    const r = new MediaReassembler(100);
+    const id = newId();
+    expect(r.push(mediaPart(id, 1, 2, 40))).toBeNull();
+    const out = r.push(mediaPart(id, 2, 2, 40));
+    expect(out?.bytes.length).toBe(80);
+  });
+});

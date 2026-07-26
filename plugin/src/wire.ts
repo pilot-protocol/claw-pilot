@@ -381,12 +381,21 @@ export type ReassembledMedia = {
   caption?: string;
 };
 
+/**
+ * Ceiling on the summed payload of all chunks held for one in-flight media
+ * envelope. Chosen above the inbound pipeline's own 25 MiB attachment cap so
+ * that cap stays the one that governs completed transfers.
+ */
+export const MAX_MEDIA_REASSEMBLY_BYTES = 32 * 1024 * 1024;
+
 /** Reassembler for media envelopes — collects binary chunks into a Buffer. */
 export class MediaReassembler {
   private parts = new Map<
     string,
     {
       received: Map<number, MediaMessage>;
+      /** Decoded payload bytes currently held, summed across `received`. */
+      bytes: number;
       total: number;
       firstTs: number;
       header?: {
@@ -400,6 +409,12 @@ export class MediaReassembler {
     }
   >();
 
+  private readonly maxBytes: number;
+
+  constructor(maxBytes: number = MAX_MEDIA_REASSEMBLY_BYTES) {
+    this.maxBytes = maxBytes;
+  }
+
   gc(now = Date.now(), maxAgeMs = 60_000): void {
     for (const [id, st] of this.parts) {
       if (now - st.firstTs > maxAgeMs) this.parts.delete(id);
@@ -411,12 +426,24 @@ export class MediaReassembler {
     if (seq < 1 || seq > total) return null;
     let st = this.parts.get(id);
     if (!st) {
-      st = { received: new Map(), total, firstTs: env.ts };
+      st = { received: new Map(), bytes: 0, total, firstTs: env.ts };
       this.parts.set(id, st);
     }
     if (st.total !== total) return null;
 
+    // Re-sending a seq replaces the held chunk, so swap its contribution
+    // rather than adding to the running total.
+    const incoming = Buffer.byteLength(env.data, "base64");
+    const previous = st.received.get(seq);
+    const projected =
+      st.bytes - (previous ? Buffer.byteLength(previous.data, "base64") : 0) + incoming;
+    if (projected > this.maxBytes) {
+      this.parts.delete(id);
+      return null;
+    }
+
     st.received.set(seq, env);
+    st.bytes = projected;
     if (seq === 1) {
       st.header = {
         from: env.from,
@@ -457,12 +484,31 @@ export class MediaReassembler {
   }
 }
 
+/**
+ * Ceiling on the summed text of all chunks held for one in-flight message.
+ * A single envelope carries at most MAX_ENVELOPE_BYTES, so this still allows
+ * text far longer than any interactive message.
+ */
+export const MAX_TEXT_REASSEMBLY_BYTES = 1024 * 1024;
+
 /** State for reassembling chunked messages keyed by envelope id. */
 export class Reassembler<T extends UserMessage | AgentMessage> {
   private parts = new Map<
     string,
-    { received: Map<number, T>; total: number; firstTs: number }
+    {
+      received: Map<number, T>;
+      /** Text bytes currently held, summed across `received`. */
+      bytes: number;
+      total: number;
+      firstTs: number;
+    }
   >();
+
+  private readonly maxBytes: number;
+
+  constructor(maxBytes: number = MAX_TEXT_REASSEMBLY_BYTES) {
+    this.maxBytes = maxBytes;
+  }
 
   /** Drop reassembly state for ids older than `maxAgeMs`. */
   gc(now: number = Date.now(), maxAgeMs = 60_000): void {
@@ -484,11 +530,24 @@ export class Reassembler<T extends UserMessage | AgentMessage> {
     if (seq === undefined || seq < 1 || seq > total) return null;
     let st = this.parts.get(env.id);
     if (!st) {
-      st = { received: new Map(), total, firstTs: env.ts };
+      st = { received: new Map(), bytes: 0, total, firstTs: env.ts };
       this.parts.set(env.id, st);
     }
     if (st.total !== total) return null; // contradictory total → drop
+
+    // Re-sending a seq replaces the held chunk, so swap its contribution
+    // rather than adding to the running total.
+    const incoming = Buffer.byteLength(env.text ?? "", "utf8");
+    const previous = st.received.get(seq);
+    const projected =
+      st.bytes - (previous ? Buffer.byteLength(previous.text ?? "", "utf8") : 0) + incoming;
+    if (projected > this.maxBytes) {
+      this.parts.delete(env.id);
+      return null;
+    }
+
     st.received.set(seq, env);
+    st.bytes = projected;
     if (st.received.size < total) return null;
     let combined = "";
     for (let i = 1; i <= total; i++) {

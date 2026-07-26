@@ -42,10 +42,15 @@ final class ConversationTests: XCTestCase {
         XCTAssertEqual(msg.attachments.first?.bytes.count, 3)
     }
 
-    func testSendAttachmentWhenNotReadyIsIgnored() {
+    func testSendAttachmentWhenNotReadyQueuesAsSending() {
+        // Same contract as send(): with no ready connection the message is
+        // queued in .sending for drainOutbox to pick up, not discarded.
         let c = Conversation()
         c.sendAttachment(kind: .image, bytes: Data([1, 2, 3]), filename: "x.png", mime: "image/png")
-        XCTAssertTrue(c.messages.isEmpty)
+        XCTAssertEqual(c.messages.count, 1)
+        XCTAssertEqual(c.messages.first?.delivery, .sending)
+        XCTAssertEqual(c.messages.first?.sender, .me)
+        XCTAssertEqual(c.messages.first?.attachments.first?.filename, "x.png")
     }
 
     func testIncomingAttachmentKindMapping() {

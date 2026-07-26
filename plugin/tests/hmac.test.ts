@@ -274,3 +274,99 @@ describe("resolveAccount — sharedSecret rules", () => {
     expect((back as { hmac?: string }).hmac).toBe("AAAA");
   });
 });
+
+describe("InboundPipeline — HMAC envelope timestamp window", () => {
+  async function signedDatagram(ts: number, id = "t1") {
+    const env = {
+      v: WIRE_VERSION,
+      kind: "user" as const,
+      id,
+      ts,
+      text: "hello",
+    };
+    const hmac = await signEnvelope(env, SECRET);
+    return encodeEnvelope({ ...env, hmac });
+  }
+
+  function makePipeline(hmacMaxSkewMs?: number) {
+    const dispatched: InboundDispatchInput[] = [];
+    const logger = silentLogger();
+    const transport = new FakeTransport();
+    const account = resolveAccount({ allowlist: [ALICE], sharedSecret: SECRET });
+    const pipeline = new InboundPipeline({
+      account,
+      dispatch: async (m) => {
+        dispatched.push(m);
+      },
+      logger,
+      aegisScan: async () => ({ blocked: false, rule: "" }),
+      ...(hmacMaxSkewMs === undefined ? {} : { hmacMaxSkewMs }),
+    });
+    pipeline.attach(transport);
+    return { dispatched, logger, transport, pipeline };
+  }
+
+  it("accepts an HMAC envelope whose ts is inside the window", async () => {
+    const { dispatched, transport, pipeline } = makePipeline(60_000);
+    transport.emitDatagram({
+      srcAddr: STRANGER,
+      srcPort: 0,
+      dstPort: 7777,
+      data: await signedDatagram(Date.now() - 5_000),
+    });
+    await new Promise((r) => setImmediate(r));
+    expect(dispatched).toHaveLength(1);
+    pipeline.stop();
+  });
+
+  it("drops an HMAC envelope whose ts is older than the window", async () => {
+    const { dispatched, logger, transport, pipeline } = makePipeline(60_000);
+    transport.emitDatagram({
+      srcAddr: STRANGER,
+      srcPort: 0,
+      dstPort: 7777,
+      data: await signedDatagram(Date.now() - 10 * 60_000),
+    });
+    await new Promise((r) => setImmediate(r));
+    // Outside the window the secret grants nothing, so STRANGER is left to
+    // the allowlist — which does not contain it.
+    expect(dispatched).toHaveLength(0);
+    expect(logger.warn).toHaveBeenCalledWith(
+      "pilot inbound: HMAC envelope timestamp outside window",
+      expect.objectContaining({ srcAddr: STRANGER }),
+    );
+    expect(logger.warn).toHaveBeenCalledWith(
+      "pilot inbound: dropped — not allowed",
+      expect.objectContaining({ srcAddr: STRANGER }),
+    );
+    pipeline.stop();
+  });
+
+  it("drops an HMAC envelope whose ts is far in the future", async () => {
+    const { dispatched, transport, pipeline } = makePipeline(60_000);
+    transport.emitDatagram({
+      srcAddr: STRANGER,
+      srcPort: 0,
+      dstPort: 7777,
+      data: await signedDatagram(Date.now() + 10 * 60_000),
+    });
+    await new Promise((r) => setImmediate(r));
+    expect(dispatched).toHaveLength(0);
+    pipeline.stop();
+  });
+
+  it("a stale envelope from an allowlisted peer is still delivered", async () => {
+    // The window gates the secret-based bypass only. An address that is on
+    // the allowlist is authorized on that basis, as before.
+    const { dispatched, transport, pipeline } = makePipeline(60_000);
+    transport.emitDatagram({
+      srcAddr: ALICE,
+      srcPort: 0,
+      dstPort: 7777,
+      data: await signedDatagram(Date.now() - 10 * 60_000, "t2"),
+    });
+    await new Promise((r) => setImmediate(r));
+    expect(dispatched).toHaveLength(1);
+    pipeline.stop();
+  });
+});
