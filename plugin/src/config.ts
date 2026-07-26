@@ -65,7 +65,7 @@ export function resolveAccount(
     accountId,
     enabled: raw.enabled !== false,
     socketPath: raw.socketPath ?? DEFAULT_SOCKET_PATH,
-    allowlist: new Set(raw.allowlist ?? []),
+    allowlist: new Set((raw.allowlist ?? []).map(canonicalPilotAddr)),
     appPort: raw.appPort ?? DEFAULT_APP_PORT,
     handshakeTrustAutoApprove: raw.handshakeTrustAutoApprove !== false,
     sharedSecret: hasSecret ? raw.sharedSecret : undefined,
@@ -76,6 +76,17 @@ const PILOT_ADDR_RE = /^[0-9]+:[0-9A-Fa-f]{4}\.[0-9A-Fa-f]{4}\.[0-9A-Fa-f]{4}$/;
 
 export function isValidPilotAddress(addr: string): boolean {
   return typeof addr === "string" && PILOT_ADDR_RE.test(addr);
+}
+
+/**
+ * Put a pilot address in the single case the rest of the plugin uses. The
+ * network id is decimal and the node id is hex, so upper-casing the whole
+ * string only touches the hex groups. Matches the form `nodeIdToAddress`
+ * emits in peer-address.ts, so addresses derived from either path compare
+ * equal.
+ */
+export function canonicalPilotAddr(addr: string): string {
+  return addr.toUpperCase();
 }
 
 /** Strip an optional `:PORT` suffix from a pilot address-with-port. */

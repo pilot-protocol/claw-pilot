@@ -31,6 +31,15 @@ public struct ChatAttachment: Equatable, Sendable {
         self.filename = filename
         self.mime = mime
     }
+
+    /// The wire-level kind this attachment travels as.
+    public var wireKind: Wire.MediaKind {
+        switch kind {
+        case .image: return .image
+        case .audio: return .audio
+        case .file:  return .file
+        }
+    }
 }
 
 public enum ChatDeliveryState: Equatable, Sendable {
@@ -237,6 +246,27 @@ public final class Conversation: ObservableObject {
                 messages[idx] = msg
                 saveToStore()
             }
+            // A message carrying an attachment has to go back out over the
+            // media path — the text path would transmit only its caption.
+            if let attachment = m.attachments.first {
+                let caption = m.text.isEmpty ? nil : m.text
+                Task { [weak self] in
+                    do {
+                        _ = try await conn.send(
+                            media: attachment.wireKind,
+                            bytes: attachment.bytes,
+                            filename: attachment.filename,
+                            mime: attachment.mime,
+                            caption: caption,
+                            messageId: m.id
+                        )
+                        self?.updateDelivery(id: m.id, to: .sent)
+                    } catch {
+                        self?.updateDelivery(id: m.id, to: deliveryStateForSendError(error))
+                    }
+                }
+                continue
+            }
             Task { [weak self] in
                 do {
                     _ = try await conn.send(text: m.text, messageId: m.id)
@@ -299,24 +329,25 @@ public final class Conversation: ObservableObject {
         filename: String? = nil,
         mime: String? = nil
     ) {
-        guard let conn = connection, conn.isReady else { return }
         let caption = draft.trimmingCharacters(in: .whitespacesAndNewlines)
         draft = ""
         let messageId = Wire.newId()
+        let attachment = ChatAttachment(kind: kind, bytes: bytes, filename: filename, mime: mime)
         let chat = ChatMessage(
             id: messageId,
             sender: .me,
             text: caption,
-            attachments: [ChatAttachment(kind: kind, bytes: bytes, filename: filename, mime: mime)],
+            attachments: [attachment],
             delivery: .sending
         )
+        // Append and persist before touching the connection, mirroring send().
+        // The message survives an app restart while still in .sending state.
         messages.append(chat)
-        let wireKind: Wire.MediaKind
-        switch kind {
-        case .image: wireKind = .image
-        case .audio: wireKind = .audio
-        case .file:  wireKind = .file
-        }
+        saveToStore()
+        // If we're not connected, leave it as .sending — drainOutbox() will
+        // pick it up the moment the connection becomes ready.
+        guard let conn = connection, conn.isReady else { return }
+        let wireKind = attachment.wireKind
         Task { [weak self] in
             do {
                 _ = try await conn.send(

@@ -11,7 +11,7 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
-import type { ResolvedPilotAccount } from "./config.js";
+import { canonicalPilotAddr, pilotAddrBase, type ResolvedPilotAccount } from "./config.js";
 import { createAegisScan, type AegisScan } from "./aegis-scan.js";
 import { decideAllowlist } from "./allowlist.js";
 import type { PeerAddressCache } from "./peer-address.js";
@@ -84,6 +84,12 @@ export type InboundDeps = {
    */
   maxMediaBytes?: number;
   /**
+   * How far an envelope's `ts` may sit from local time, in either direction,
+   * for the HMAC path to accept it. Only applies when authorization came
+   * from the shared secret rather than the allowlist. Default 2 minutes.
+   */
+  hmacMaxSkewMs?: number;
+  /**
    * If set, the pipeline sends an `ack` envelope back to the peer once a
    * message has been fully reassembled (text or media). Lets senders
    * distinguish "delivered to the plugin" from silent drops.
@@ -122,6 +128,7 @@ export class InboundPipeline {
   private recentOrder: Array<{ id: string; ts: number }> = [];
   private readonly mediaDir: string;
   private readonly maxMediaBytes: number;
+  private readonly hmacMaxSkewMs: number;
   private readonly aegisScan: AegisScan;
 
   constructor(deps: InboundDeps) {
@@ -129,6 +136,7 @@ export class InboundPipeline {
     this.recent = deps.recentIds ?? new Set();
     this.mediaDir = deps.mediaDir ?? join(tmpdir(), "claw-pilot-inbound");
     this.maxMediaBytes = deps.maxMediaBytes ?? 25 * 1024 * 1024;
+    this.hmacMaxSkewMs = deps.hmacMaxSkewMs ?? 120_000;
     this.aegisScan = deps.aegisScan ?? createAegisScan();
     try {
       mkdirSync(this.mediaDir, { recursive: true });
@@ -199,7 +207,22 @@ export class InboundPipeline {
     const hmacOK = this.deps.account.sharedSecret
       ? await verifyEnvelope(env, this.deps.account.sharedSecret)
       : false;
-    if (!hmacOK) {
+    // The bypass additionally requires the envelope's `ts` to be inside the
+    // accepted window. `ts` is covered by the HMAC, so the window bounds how
+    // long a given signed envelope stays usable. Outside it, authorization
+    // falls back to the allowlist instead of being granted by the secret.
+    const skewMs = Math.abs(Date.now() - env.ts);
+    const hmacFresh = hmacOK && Number.isFinite(env.ts) && skewMs <= this.hmacMaxSkewMs;
+    if (hmacOK && !hmacFresh) {
+      this.deps.logger.warn("pilot inbound: HMAC envelope timestamp outside window", {
+        srcAddr: dg.srcAddr,
+        id: env.id,
+        ts: env.ts,
+        skewMs: Number.isFinite(skewMs) ? skewMs : null,
+        maxSkewMs: this.hmacMaxSkewMs,
+      });
+    }
+    if (!hmacFresh) {
       const decision = decideAllowlist(dg.srcAddr, this.deps.account.allowlist);
       if (!decision.allowed) {
         this.deps.logger.warn("pilot inbound: dropped — not allowed", {
@@ -211,11 +234,7 @@ export class InboundPipeline {
       }
       peer = decision.peer;
     } else {
-      // Strip any port suffix for consistent logging / dispatch.
-      const colonIdx = peer.lastIndexOf(":");
-      if (colonIdx > 0 && /^\d+$/.test(peer.slice(colonIdx + 1))) {
-        peer = peer.slice(0, colonIdx);
-      }
+      peer = canonicalPilotAddr(pilotAddrBase(peer));
       this.deps.logger.debug?.("pilot inbound: HMAC verified — bypassing allowlist", {
         srcAddr: peer,
         id: env.id,
